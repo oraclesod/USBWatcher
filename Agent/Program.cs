@@ -5,7 +5,9 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Microsoft.Toolkit.Uwp.Notifications;
@@ -40,10 +42,13 @@ namespace DataLockerWatcherAgent
     {
         private const string EventSource = "DataLockerWatcher-Agent";
         private const string HkcuRunValueName = "DataLockerWatcher-Agent";
+        private const string SingleInstanceMutexName = @"Local\DataLockerWatcher-Agent";
 
         private static readonly string FallbackLogPath =
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DataLockerWatcher-Agent", "DataLockerWatcher-Agent.log");
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DataLockerWatcher-Agent",
+                "DataLockerWatcher-Agent.log");
 
         private static readonly string ConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
         private static readonly string AgentExePath = Path.Combine(AppContext.BaseDirectory, "DataLockerWatcher-Agent.exe");
@@ -74,16 +79,21 @@ namespace DataLockerWatcherAgent
         private static bool _deviceUnlocked;
         private static bool _lastSyncFailed;
 
+        private static Mutex? _singleInstanceMutex;
+
+        [DllImport("kernel32.dll")]
+        private static extern uint WTSGetActiveConsoleSessionId();
+
         [STAThread]
         static void Main()
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FallbackLogPath)!);
-
-            try { _cfg = LoadConfigOrThrow(ConfigPath); }
-            catch (Exception ex)
+            try
             {
-                LogError($"Config load failed: {ex.Message}");
-                _cfg = new Config();
+                Directory.CreateDirectory(Path.GetDirectoryName(FallbackLogPath)!);
+            }
+            catch
+            {
+                // Best effort only
             }
 
             var args = Environment.GetCommandLineArgs();
@@ -93,32 +103,62 @@ namespace DataLockerWatcherAgent
                 return;
             }
 
+            bool createdNew = false;
+
             try
             {
+                _singleInstanceMutex = new Mutex(initiallyOwned: true, name: SingleInstanceMutexName, createdNew: out createdNew);
+                if (!createdNew)
+                {
+                    LogInfo("Another instance of DataLockerWatcher-Agent is already running in this session. Exiting.");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed to create single-instance mutex: {ex}");
+                return;
+            }
+
+            try
+            {
+                try
+                {
+                    _cfg = LoadConfigOrThrow(ConfigPath);
+                }
+                catch (Exception ex)
+                {
+                    LogError($"Config load failed: {ex.Message}");
+                    _cfg = new Config();
+                }
+
                 LogInfo("Agent starting (normal mode).");
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
 
-                // Create the tray + a hidden UI invoker window to marshal all UI updates safely
                 _tray = new TrayAppContext();
                 _uiInvoker = new UiInvokerForm();
 
-                
-                // Ensure the hidden form has a created handle so BeginInvoke works reliably.
                 _uiInvoker.CreateControl();
                 _ = _uiInvoker.Handle;
-ToastNotificationManagerCompat.OnActivated += toastArgs =>
+
+                ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 {
                     try
                     {
                         var targs = ToastArguments.Parse(toastArgs.Argument);
-                        if (!targs.TryGetValue("action", out var action)) return;
-                        if (!string.Equals(action, "unlock", StringComparison.OrdinalIgnoreCase)) return;
+                        if (!targs.TryGetValue("action", out var action))
+                            return;
+
+                        if (!string.Equals(action, "unlock", StringComparison.OrdinalIgnoreCase))
+                            return;
 
                         string? drive = targs.Contains("drive") ? targs["drive"] : null;
                         string? exe = targs.Contains("exe") ? targs["exe"] : null;
-                        if (string.IsNullOrWhiteSpace(drive) || string.IsNullOrWhiteSpace(exe)) return;
+
+                        if (string.IsNullOrWhiteSpace(drive) || string.IsNullOrWhiteSpace(exe))
+                            return;
 
                         string exePath = Path.Combine(drive + "\\", exe);
                         LogInfo($"Toast unlock requested. Launching: {exePath}");
@@ -146,10 +186,8 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 StartWatchers();
                 StartStatePolling();
 
-                // Prime best-effort
                 RefreshDeviceStateAndUi_PollOnly();
 
-                // Run message loop
                 Application.Run(_tray);
             }
             catch (Exception ex)
@@ -160,11 +198,15 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
             {
                 StopStatePolling();
                 StopWatchers();
+
                 try { _uiInvoker?.Close(); } catch { }
+
+                try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
+                try { _singleInstanceMutex?.Dispose(); } catch { }
+                _singleInstanceMutex = null;
             }
         }
 
-        // Hidden form used ONLY to marshal tray updates onto the WinForms UI thread.
         private sealed class UiInvokerForm : Form
         {
             public UiInvokerForm()
@@ -175,7 +217,7 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 Width = 1;
                 Height = 1;
                 StartPosition = FormStartPosition.Manual;
-                Location = new System.Drawing.Point(-2000, -2000);
+                Location = new Point(-2000, -2000);
                 Load += (_, _) => Hide();
             }
         }
@@ -198,7 +240,28 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 else
                     action();
             }
-            catch { }
+            catch
+            {
+            }
+        }
+
+        private static bool IsCurrentSessionActiveForSync()
+        {
+            try
+            {
+                int currentSessionId = Process.GetCurrentProcess().SessionId;
+                uint activeSessionId = WTSGetActiveConsoleSessionId();
+
+                bool isActive = activeSessionId != 0xFFFFFFFF && currentSessionId == (int)activeSessionId;
+
+                LogInfo($"Active-session check: currentSessionId={currentSessionId}, activeConsoleSessionId={activeSessionId}, isActive={isActive}");
+                return isActive;
+            }
+            catch (Exception ex)
+            {
+                LogError($"IsCurrentSessionActiveForSync error: {ex}");
+                return false;
+            }
         }
 
         private static void SetDeviceState(bool detected, bool unlocked, string reason)
@@ -218,7 +281,11 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
         private static void SetSyncFailed(bool failed, string reason)
         {
-            lock (_stateLock) { _lastSyncFailed = failed; }
+            lock (_stateLock)
+            {
+                _lastSyncFailed = failed;
+            }
+
             LogInfo($"STATE: lastSyncFailed={failed} ({reason})");
             PostUiStateUpdate();
         }
@@ -233,9 +300,13 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
         private static void PostUiStateUpdate()
         {
-            if (_tray == null) return;
+            if (_tray == null)
+                return;
 
-            bool detected, unlocked, failed;
+            bool detected;
+            bool unlocked;
+            bool failed;
+
             lock (_stateLock)
             {
                 detected = _deviceDetected;
@@ -259,13 +330,23 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
         private static void StartStatePolling()
         {
-            _stateTimer = new System.Windows.Forms.Timer();
-            _stateTimer.Interval = 2000;
+            _stateTimer = new System.Windows.Forms.Timer
+            {
+                Interval = 2000
+            };
+
             _stateTimer.Tick += (_, _) =>
             {
-                try { RefreshDeviceStateAndUi_PollOnly(); }
-                catch (Exception ex) { LogError($"State poll error: {ex.Message}"); }
+                try
+                {
+                    RefreshDeviceStateAndUi_PollOnly();
+                }
+                catch (Exception ex)
+                {
+                    LogError($"State poll error: {ex.Message}");
+                }
             };
+
             _stateTimer.Start();
         }
 
@@ -280,7 +361,9 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                     _stateTimer = null;
                 }
             }
-            catch { }
+            catch
+            {
+            }
         }
 
         private static void RefreshDeviceStateAndUi_PollOnly()
@@ -299,8 +382,7 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 else
                 {
                     _deviceDetected = true;
-                    if (unlocked)
-                        _deviceUnlocked = true;
+                    _deviceUnlocked = unlocked;
                 }
             }
 
@@ -357,7 +439,8 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
             try
             {
                 var disk = e.NewEvent?["TargetInstance"] as ManagementBaseObject;
-                if (disk == null) return;
+                if (disk == null)
+                    return;
 
                 string pnp = (disk["PNPDeviceID"] as string) ?? "";
                 string model = (disk["Model"] as string) ?? "";
@@ -370,13 +453,16 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
                 SetDeviceState(detected: true, unlocked: false, reason: "disk-insert");
 
-                if (!_cfg.Unlock.ToastOnDetected) return;
+                if (!_cfg.Unlock.ToastOnDetected)
+                    return;
 
                 var now = DateTime.UtcNow;
-                if ((now - _lastDetectedToastUtc) < DetectToastCooldown) return;
+                if ((now - _lastDetectedToastUtc) < DetectToastCooldown)
+                    return;
+
                 _lastDetectedToastUtc = now;
 
-                string? exeName = string.IsNullOrWhiteSpace(_cfg.Unlock.ExeName) ? null : _cfg.Unlock.ExeName!.Trim();
+                string? exeName = string.IsNullOrWhiteSpace(_cfg.Unlock.ExeName) ? null : _cfg.Unlock.ExeName.Trim();
                 if (exeName == null)
                 {
                     TryToast("DataLocker detected", "Device detected. Please unlock the drive to begin sync.");
@@ -418,7 +504,8 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
             try
             {
                 var vol = e.NewEvent?["TargetInstance"] as ManagementBaseObject;
-                if (vol == null) return;
+                if (vol == null)
+                    return;
 
                 string? driveLetter = vol["DriveLetter"] as string;
                 string? fileSystem = vol["FileSystem"] as string;
@@ -426,14 +513,28 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 if (string.IsNullOrWhiteSpace(driveLetter) || string.IsNullOrWhiteSpace(fileSystem))
                     return;
 
+                if (string.Equals(fileSystem, "CDFS", StringComparison.OrdinalIgnoreCase))
+                {
+                    LogInfo($"{kind}: Ignoring CDFS volume event at {driveLetter}.");
+                    return;
+                }
+
                 string? pnp = TryGetPnpForDriveLetter(driveLetter);
                 if (string.IsNullOrWhiteSpace(pnp) || !PnpMatches(pnp, _cfg.Device?.PnpDeviceIdContainsAny))
                     return;
 
                 SetDeviceState(detected: true, unlocked: true, reason: $"{kind}-volume({driveLetter},{fileSystem})");
 
+                if (!IsCurrentSessionActiveForSync())
+                {
+                    LogInfo($"{kind}: Unlocked volume detected at {driveLetter}, but current session is not active. Skipping sync launch.");
+                    return;
+                }
+
                 var now = DateTime.UtcNow;
-                if ((now - _lastSyncLaunchUtc) < SyncLaunchCooldown) return;
+                if ((now - _lastSyncLaunchUtc) < SyncLaunchCooldown)
+                    return;
+
                 _lastSyncLaunchUtc = now;
 
                 LogInfo($"{kind}: DataLocker unlocked volume mounted at {driveLetter} ({fileSystem}). Launching Sync.");
@@ -445,7 +546,6 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 LogError($"OnVolumeEvent error: {ex}");
             }
         }
-
 
         private static string? TryGetUnlockedDriveLetterForDevice()
         {
@@ -460,7 +560,6 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                     if (string.IsNullOrWhiteSpace(dl) || string.IsNullOrWhiteSpace(fs))
                         continue;
 
-                    // Skip the DataLocker virtual CD (unlock utility)
                     if (string.Equals(fs, "CDFS", StringComparison.OrdinalIgnoreCase))
                         continue;
 
@@ -546,8 +645,10 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                             lock (_syncLock)
                             {
                                 try { p.Dispose(); } catch { }
-                                if (ReferenceEquals(_syncProcess, p)) _syncProcess = null;
+                                if (ReferenceEquals(_syncProcess, p))
+                                    _syncProcess = null;
                             }
+
                             PostUiStateUpdate();
                         }
                     };
@@ -570,21 +671,19 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
             }
         }
 
-
         private static bool TryLaunchUnlockFromTray(out string? error)
         {
             error = null;
 
             try
             {
-                string? exeName = string.IsNullOrWhiteSpace(_cfg.Unlock.ExeName) ? null : _cfg.Unlock.ExeName!.Trim();
+                string? exeName = string.IsNullOrWhiteSpace(_cfg.Unlock.ExeName) ? null : _cfg.Unlock.ExeName.Trim();
                 if (string.IsNullOrWhiteSpace(exeName))
                 {
                     error = "Unlock.ExeName is not configured in config.json.";
                     return false;
                 }
 
-                // DataLocker typically exposes the unlock utility on its CD-ROM (CDFS) volume.
                 string? cdfsDrive = FindCdfsDriveContainingExe(exeName);
                 if (cdfsDrive == null)
                 {
@@ -628,7 +727,11 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                         return true;
                 }
             }
-            catch (Exception ex) { LogError($"IsMatchingUsbDiskPresent error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                LogError($"IsMatchingUsbDiskPresent error: {ex.Message}");
+            }
+
             return false;
         }
 
@@ -641,17 +744,26 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 {
                     string? dl = vol["DriveLetter"] as string;
                     string? fs = vol["FileSystem"] as string;
+
                     if (string.IsNullOrWhiteSpace(dl) || string.IsNullOrWhiteSpace(fs))
                         continue;
 
+                    if (string.Equals(fs, "CDFS", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     string? pnp = TryGetPnpForDriveLetter(dl);
-                    if (string.IsNullOrWhiteSpace(pnp)) continue;
+                    if (string.IsNullOrWhiteSpace(pnp))
+                        continue;
 
                     if (PnpMatches(pnp, _cfg.Device?.PnpDeviceIdContainsAny))
                         return true;
                 }
             }
-            catch (Exception ex) { LogError($"IsMatchingUnlockedVolumePresent error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                LogError($"IsMatchingUnlockedVolumePresent error: {ex.Message}");
+            }
+
             return false;
         }
 
@@ -664,15 +776,23 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 {
                     string? dl = vol["DriveLetter"] as string;
                     string? fs = vol["FileSystem"] as string;
-                    if (string.IsNullOrWhiteSpace(dl)) continue;
-                    if (!string.Equals(fs, "CDFS", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    if (string.IsNullOrWhiteSpace(dl))
+                        continue;
+
+                    if (!string.Equals(fs, "CDFS", StringComparison.OrdinalIgnoreCase))
+                        continue;
 
                     string candidate = Path.Combine(dl + "\\", exeName);
                     if (File.Exists(candidate))
                         return dl;
                 }
             }
-            catch (Exception ex) { LogError($"FindCdfsDriveContainingExe error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                LogError($"FindCdfsDriveContainingExe error: {ex.Message}");
+            }
+
             return null;
         }
 
@@ -680,14 +800,19 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
         {
             try
             {
-                string qPart = $"ASSOCIATORS OF {{Win32_LogicalDisk.DeviceID='{EscapeWmi(driveLetter)}'}} WHERE AssocClass=Win32_LogicalDiskToPartition";
+                string qPart =
+                    $"ASSOCIATORS OF {{Win32_LogicalDisk.DeviceID='{EscapeWmi(driveLetter)}'}} WHERE AssocClass=Win32_LogicalDiskToPartition";
+
                 using var partSearcher = new ManagementObjectSearcher(qPart);
                 foreach (ManagementObject part in partSearcher.Get())
                 {
                     string partId = (part["DeviceID"] as string) ?? "";
-                    if (string.IsNullOrWhiteSpace(partId)) continue;
+                    if (string.IsNullOrWhiteSpace(partId))
+                        continue;
 
-                    string qDisk = $"ASSOCIATORS OF {{Win32_DiskPartition.DeviceID='{EscapeWmi(partId)}'}} WHERE AssocClass=Win32_DiskDriveToDiskPartition";
+                    string qDisk =
+                        $"ASSOCIATORS OF {{Win32_DiskPartition.DeviceID='{EscapeWmi(partId)}'}} WHERE AssocClass=Win32_DiskDriveToDiskPartition";
+
                     using var diskSearcher = new ManagementObjectSearcher(qDisk);
                     foreach (ManagementObject disk in diskSearcher.Get())
                     {
@@ -697,21 +822,31 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                     }
                 }
             }
-            catch (Exception ex) { LogError($"TryGetPnpForDriveLetter error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                LogError($"TryGetPnpForDriveLetter error: {ex.Message}");
+            }
+
             return null;
         }
 
         private static bool PnpMatches(string pnp, string[]? containsAny)
         {
-            if (string.IsNullOrWhiteSpace(pnp)) return false;
-            if (containsAny == null || containsAny.Length == 0) return false;
+            if (string.IsNullOrWhiteSpace(pnp))
+                return false;
+
+            if (containsAny == null || containsAny.Length == 0)
+                return false;
 
             foreach (var needle in containsAny)
             {
-                if (string.IsNullOrWhiteSpace(needle)) continue;
+                if (string.IsNullOrWhiteSpace(needle))
+                    continue;
+
                 if (pnp.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
                     return true;
             }
+
             return false;
         }
 
@@ -721,7 +856,9 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 throw new FileNotFoundException("config.json not found", path);
 
             var json = File.ReadAllText(path);
-            var cfg = JsonSerializer.Deserialize<Config>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+            var cfg = JsonSerializer.Deserialize<Config>(
+                          json,
+                          new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                       ?? throw new InvalidOperationException("Failed to deserialize config.json.");
 
             if (cfg.Device?.PnpDeviceIdContainsAny == null || cfg.Device.PnpDeviceIdContainsAny.Length == 0)
@@ -729,6 +866,7 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
             cfg.Unlock ??= new Config.UnlockConfig();
             cfg.Sync ??= new Config.SyncConfig();
+
             return cfg;
         }
 
@@ -738,17 +876,27 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
             {
                 LogInfo("Init mode starting.");
 
-                if (HkcuRunValueExists())
-                {
-                    LogInfo("Init: HKCU Run already exists. Exiting init.");
-                    return;
-                }
-
                 using var runKey = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true)
                                ?? Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
 
-                runKey.SetValue(HkcuRunValueName, $"\"{AgentExePath}\"", RegistryValueKind.String);
-                LogInfo("Init: HKCU Run created for this user.");
+                string desiredValue = $"\"{AgentExePath}\"";
+                string? existingValue = runKey.GetValue(HkcuRunValueName) as string;
+
+                if (!string.Equals(existingValue, desiredValue, StringComparison.OrdinalIgnoreCase))
+                {
+                    runKey.SetValue(HkcuRunValueName, desiredValue, RegistryValueKind.String);
+                    LogInfo("Init: HKCU Run created/updated for this user.");
+                }
+                else
+                {
+                    LogInfo("Init: HKCU Run already correct.");
+                }
+
+                if (IsAgentAlreadyRunning())
+                {
+                    LogInfo("Init: Agent already running in this session. Not launching another instance.");
+                    return;
+                }
 
                 Process.Start(new ProcessStartInfo
                 {
@@ -766,15 +914,22 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
             }
         }
 
-        private static bool HkcuRunValueExists()
+        private static bool IsAgentAlreadyRunning()
         {
             try
             {
-                using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: false);
-                var val = key?.GetValue(HkcuRunValueName) as string;
-                return !string.IsNullOrWhiteSpace(val);
+                using var mutex = Mutex.OpenExisting(SingleInstanceMutexName);
+                return true;
             }
-            catch { return false; }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LogError($"IsAgentAlreadyRunning check failed: {ex.Message}");
+                return false;
+            }
         }
 
         private static void TryAddToastLogo(ToastContentBuilder builder)
@@ -786,7 +941,10 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
                 builder.AddAppLogoOverride(new Uri(ToastLogoPngPath), ToastGenericAppLogoCrop.Circle);
             }
-            catch (Exception ex) { LogError($"Toast logo load failed: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                LogError($"Toast logo load failed: {ex.Message}");
+            }
         }
 
         private static void TryToast(string title, string body)
@@ -796,10 +954,14 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 var builder = new ToastContentBuilder()
                     .AddText(title)
                     .AddText(body);
+
                 TryAddToastLogo(builder);
                 builder.Show();
             }
-            catch (Exception ex) { LogError($"Toast failed: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                LogError($"Toast failed: {ex.Message}");
+            }
         }
 
         private static string EscapeWmi(string s) => s.Replace("\\", "\\\\").Replace("'", "\\'");
@@ -809,10 +971,19 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
 
         private static void Log(string msg, EventLogEntryType type)
         {
-            try { EventLog.WriteEntry(EventSource, msg, type); }
+            try
+            {
+                EventLog.WriteEntry(EventSource, msg, type);
+            }
             catch
             {
-                try { File.AppendAllText(FallbackLogPath, $"[{DateTime.Now:O}] {msg}{Environment.NewLine}"); } catch { }
+                try
+                {
+                    File.AppendAllText(FallbackLogPath, $"[{DateTime.Now:O}] {msg}{Environment.NewLine}");
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -848,7 +1019,9 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 _unlockItem = new ToolStripMenuItem("Unlock");
                 _unlockItem.Click += (_, _) =>
                 {
-                    if (!_unlockItem.Enabled) return;
+                    if (!_unlockItem.Enabled)
+                        return;
+
                     if (!TryLaunchUnlockFromTray(out var err))
                     {
                         LogError($"Unlock failed: {err}");
@@ -860,12 +1033,22 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                 _syncItem = new ToolStripMenuItem("Sync");
                 _syncItem.Click += (_, _) =>
                 {
-                    if (!_syncItem.Enabled) return;
+                    if (!_syncItem.Enabled)
+                        return;
+
+                    if (!IsCurrentSessionActiveForSync())
+                    {
+                        LogInfo("Tray: manual sync requested, but current session is not active. Ignoring.");
+                        TryToast("DataLocker", "Sync can only be started from the active user session.");
+                        return;
+                    }
+
                     var hint = TryGetUnlockedDriveLetterForDevice();
                     if (string.IsNullOrWhiteSpace(hint))
                     {
                         LogError("Tray: manual sync requested but could not resolve unlocked drive letter; launching sync without hint.");
                     }
+
                     LaunchSyncProcess_TrustedUnlockedEvent(hint, "Tray: manual sync");
                 };
                 menu.Items.Add(_syncItem);
@@ -934,7 +1117,10 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                     _notifyIcon.Visible = false;
                     _notifyIcon.Dispose();
                 }
-                catch { }
+                catch
+                {
+                }
+
                 base.ExitThreadCore();
             }
 
@@ -950,7 +1136,8 @@ ToastNotificationManagerCompat.OnActivated += toastArgs =>
                         return fallback;
 
                     using var s = asm.GetManifestResourceStream(name);
-                    if (s == null) return fallback;
+                    if (s == null)
+                        return fallback;
 
                     return new Icon(s);
                 }
