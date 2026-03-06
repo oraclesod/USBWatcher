@@ -1,0 +1,18 @@
+{
+  "Device": {
+    "PnpDeviceIdContainsAny": [
+      "VEN_DL",
+      "PROD_SENTRY"
+    ]
+  },
+  "Unlock": {
+    "ExeName": "unlocker.exe",
+    "ToastOnDetected": true
+  },
+  "Sync": {
+    "Source": "",
+    "TargetFolder": "Data",
+    "Mode": 1,
+    "Key": ""
+  }
+}

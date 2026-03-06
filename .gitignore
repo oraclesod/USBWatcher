@@ -1,0 +1,16 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+*.log
+*.pdb
+*.db
+*.opendb
+*.sqlite
+*.nupkg
+packages/
+TestResults/
+*.zip
+.dlw-temp-extract/
