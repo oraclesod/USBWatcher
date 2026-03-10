@@ -2,6 +2,7 @@ using Microsoft.Win32;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 
 namespace DataLockerWatcherInstall
@@ -27,7 +28,7 @@ namespace DataLockerWatcherInstall
 
         private static readonly string InstallLogPath = Path.Combine(InstallDir, "Install.log");
 
-        // Directory where this installer was launched from (typically the publish/output folder)
+        // Directory where this installer was launched from (typically the publish/output folder / Intune cache)
         private string SourceDir => AppContext.BaseDirectory;
 
         private const string AgentExeName = "DataLockerWatcher-Agent.exe";
@@ -67,11 +68,19 @@ namespace DataLockerWatcherInstall
                     return 1;
                 }
 
-                StopAgentProcesses();
+                if (!StopAgentProcesses())
+                {
+                    LogInstallEvent(
+                        $"Upgrade aborted because Agent did not exit within {AgentStopWaitTimeout.TotalSeconds:0} seconds.",
+                        EventLogEntryType.Error);
+
+                    AppendInstallLog("Upgrade aborted: Agent still running after timeout.");
+                    return 1;
+                }
             }
 
             // Copy payloads
-            CopyPayload(InstallExeName, overwrite: true); // special: copies the currently running installer
+            CopyPayload(InstallExeName, overwrite: true); // copies the currently running installer
             CopyPayload(AgentExeName, overwrite: true);
             CopyPayload(SyncExeName, overwrite: true);
             CopyPayload(ConfigFileName, overwrite: true);
@@ -166,8 +175,8 @@ namespace DataLockerWatcherInstall
                 LogInstallEvent($"Failed removing Start Menu folder: {ex}", EventLogEntryType.Warning);
             }
 
-            // Stop agent (best effort)
-            TryRunSystem("taskkill.exe", $"/IM \"{AgentExeName}\" /F");
+            // Stop agent(s) best effort
+            StopAgentProcessesBestEffort();
 
             // Remove HKCU Run for active user (best effort)
             var session = SessionHelper.TryGetActiveSession();
@@ -202,6 +211,7 @@ namespace DataLockerWatcherInstall
         {
             var sw = Stopwatch.StartNew();
             bool firstLog = true;
+            var processName = Path.GetFileNameWithoutExtension(SyncExeName);
 
             while (sw.Elapsed < timeout)
             {
@@ -209,7 +219,7 @@ namespace DataLockerWatcherInstall
 
                 try
                 {
-                    syncProcesses = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(SyncExeName));
+                    syncProcesses = Process.GetProcessesByName(processName);
                     if (syncProcesses.Length == 0)
                     {
                         LogInstallEvent("No running Sync process detected.");
@@ -218,8 +228,20 @@ namespace DataLockerWatcherInstall
 
                     if (firstLog)
                     {
+                        var details = string.Join(", ", syncProcesses.Select(p =>
+                        {
+                            try
+                            {
+                                return $"PID={p.Id}, Session={p.SessionId}";
+                            }
+                            catch
+                            {
+                                return "PID=<unknown>";
+                            }
+                        }));
+
                         LogInstallEvent(
-                            $"Sync is currently running ({syncProcesses.Length} instance(s)); waiting up to {timeout.TotalMinutes:0} minutes for it to finish.");
+                            $"Sync is currently running ({syncProcesses.Length} instance(s)); waiting up to {timeout.TotalMinutes:0} minutes for it to finish. Found: {details}");
                         firstLog = false;
                     }
                     else
@@ -250,35 +272,63 @@ namespace DataLockerWatcherInstall
             return false;
         }
 
-        private void StopAgentProcesses()
+        private bool StopAgentProcesses()
         {
-            try
-            {
-                LogInstallEvent("Stopping Agent process(es) before upgrade...");
-                TryRunSystem("taskkill.exe", $"/IM \"{AgentExeName}\" /F");
-            }
-            catch (Exception ex)
-            {
-                LogInstallEvent($"taskkill for Agent threw an exception: {ex}", EventLogEntryType.Warning);
-            }
-
             var sw = Stopwatch.StartNew();
+            var processName = Path.GetFileNameWithoutExtension(AgentExeName);
+            bool firstPass = true;
+
             while (sw.Elapsed < AgentStopWaitTimeout)
             {
                 Process[] agents = Array.Empty<Process>();
 
                 try
                 {
-                    agents = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(AgentExeName));
+                    agents = Process.GetProcessesByName(processName);
+
                     if (agents.Length == 0)
                     {
-                        LogInstallEvent("Agent process(es) stopped.");
-                        return;
+                        LogInstallEvent("No Agent processes remain.");
+                        return true;
                     }
+
+                    var details = string.Join(", ", agents.Select(p =>
+                    {
+                        try
+                        {
+                            return $"PID={p.Id}, Session={p.SessionId}";
+                        }
+                        catch
+                        {
+                            return "PID=<unknown>";
+                        }
+                    }));
+
+                    LogInstallEvent(
+                        firstPass
+                            ? $"Stopping Agent process(es) before upgrade. Found: {details}"
+                            : $"Agent process(es) still present after {Math.Floor(sw.Elapsed.TotalSeconds):0}s. Found: {details}",
+                        EventLogEntryType.Warning);
+
+                    foreach (var p in agents)
+                    {
+                        try
+                        {
+                            p.Kill(entireProcessTree: false);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogInstallEvent(
+                                $"Failed to kill Agent PID={SafePid(p)} Session={SafeSessionId(p)}: {ex.Message}",
+                                EventLogEntryType.Warning);
+                        }
+                    }
+
+                    firstPass = false;
                 }
                 catch (Exception ex)
                 {
-                    LogInstallEvent($"Error while checking for Agent processes: {ex}", EventLogEntryType.Warning);
+                    LogInstallEvent($"Error while stopping Agent processes: {ex}", EventLogEntryType.Warning);
                 }
                 finally
                 {
@@ -291,9 +341,61 @@ namespace DataLockerWatcherInstall
                 Thread.Sleep(AgentStopPollInterval);
             }
 
-            LogInstallEvent(
-                $"Agent still appears to be running after waiting {AgentStopWaitTimeout.TotalSeconds:0} seconds.",
-                EventLogEntryType.Warning);
+            try
+            {
+                var remaining = Process.GetProcessesByName(processName);
+                var details = string.Join(", ", remaining.Select(p =>
+                {
+                    try
+                    {
+                        return $"PID={p.Id}, Session={p.SessionId}";
+                    }
+                    catch
+                    {
+                        return "PID=<unknown>";
+                    }
+                }));
+
+                LogInstallEvent(
+                    $"Agent still appears to be running after waiting {AgentStopWaitTimeout.TotalSeconds:0} seconds. Remaining: {details}",
+                    EventLogEntryType.Error);
+
+                foreach (var p in remaining)
+                {
+                    try { p.Dispose(); } catch { }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private void StopAgentProcessesBestEffort()
+        {
+            try
+            {
+                var processName = Path.GetFileNameWithoutExtension(AgentExeName);
+                var agents = Process.GetProcessesByName(processName);
+
+                foreach (var p in agents)
+                {
+                    try
+                    {
+                        p.Kill(entireProcessTree: false);
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+
+                LogInstallEvent("Best-effort stop of Agent process(es) completed.");
+            }
+            catch (Exception ex)
+            {
+                LogInstallEvent($"Best-effort stop of Agent process(es) failed: {ex}", EventLogEntryType.Warning);
+            }
         }
 
         private bool TryStartAgentFallback(string agentPath, out string? error)
@@ -324,7 +426,6 @@ namespace DataLockerWatcherInstall
                     return false;
                 }
 
-                // We don't wait; just confirm it didn't immediately throw.
                 return true;
             }
             catch (Exception ex)
@@ -361,17 +462,24 @@ namespace DataLockerWatcherInstall
             if (!File.Exists(src))
                 throw new FileNotFoundException($"Required payload not found: {src}");
 
+            LogInstallEvent($"Copying payload '{fileName}' from '{src}' to '{dst}'.");
             File.Copy(src, dst, overwrite);
+            LogInstallEvent($"Copied payload '{fileName}'.");
         }
 
         private void CopyPayloadIfExists(string fileName, bool overwrite)
         {
             var src = GetPayloadSourcePath(fileName, allowMissing: true);
             if (!File.Exists(src))
+            {
+                LogInstallEvent($"Optional payload '{fileName}' not found at '{src}', skipping.");
                 return;
+            }
 
             var dst = Path.Combine(InstallDir, fileName);
+            LogInstallEvent($"Copying optional payload '{fileName}' from '{src}' to '{dst}'.");
             File.Copy(src, dst, overwrite);
+            LogInstallEvent($"Copied optional payload '{fileName}'.");
         }
 
         /// <summary>
@@ -465,21 +573,14 @@ namespace DataLockerWatcherInstall
             catch { }
         }
 
-        private void TryRunSystem(string fileName, string args)
+        private static int SafePid(Process p)
         {
-            try
-            {
-                using var p = Process.Start(new ProcessStartInfo
-                {
-                    FileName = fileName,
-                    Arguments = args,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                });
-                p?.WaitForExit(10_000);
-            }
-            catch { }
+            try { return p.Id; } catch { return -1; }
+        }
+
+        private static int SafeSessionId(Process p)
+        {
+            try { return p.SessionId; } catch { return -1; }
         }
     }
 }
