@@ -18,16 +18,16 @@
     <!-- IMPORTANT: keep trimming off unless you've validated WinRT/toasts under trimming -->
     <PublishTrimmed>false</PublishTrimmed>
 
-    <AssemblyTitle>DataLockerWatcherAgent</AssemblyTitle>
-    <Product>DataLockerWatcher - Agent</Product>
-    <AssemblyName>DataLockerWatcher-Agent</AssemblyName>
-    <RootNamespace>DataLockerWatcherAgent</RootNamespace>
-    <ApplicationIcon>Assets\datalocker.ico</ApplicationIcon>
+    <AssemblyTitle>USBWatcherAgent</AssemblyTitle>
+    <Product>USBWatcher - Agent</Product>
+    <AssemblyName>USBWatcher-Agent</AssemblyName>
+    <RootNamespace>USBWatcherAgent</RootNamespace>
+    <ApplicationIcon>..\Common\Assets\USBWatcher.ico</ApplicationIcon>
 
     <Copyright>Copyright © 2026</Copyright>
-    <AssemblyVersion>1.0.4.6</AssemblyVersion>
-    <Version>1.0.4.6</Version>
-    <FileVersion>1.0.4.6</FileVersion>
+    <AssemblyVersion>1.0.5.1</AssemblyVersion>
+    <Version>1.0.5.1</Version>
+    <FileVersion>1.0.5.1</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,12 +36,14 @@
     <PackageReference Include="System.DirectoryServices.AccountManagement" Version="9.0.5" />
     <PackageReference Include="System.Management" Version="10.0.2" />
     <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
-    <EmbeddedResource Include="Assets\datalocker-sync.ico" />
-    <EmbeddedResource Include="Assets\datalocker-error.ico" />
-    <EmbeddedResource Include="Assets\datalocker.ico" />
-    <EmbeddedResource Include="Assets\datalocker-ok.ico" />
-    <EmbeddedResource Include="Assets\datalocker-locked.ico" />
-    <EmbeddedResource Include="Assets\datalocker-disconnected.ico" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher-sync.ico" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher-error.ico" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher.ico" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher-ok.ico" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher-locked.ico" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher-disconnected.ico" />
+    <Compile Include="..\Common\Logger.cs" Link="Common\Logger.cs" />
+    <Compile Include="..\Common\EventIds.cs" Link="Common\EventIds.cs" />
   </ItemGroup>
 
 </Project>

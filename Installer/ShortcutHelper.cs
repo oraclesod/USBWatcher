@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 
-namespace DataLockerWatcherInstall
+namespace USBWatcherInstall
 {
     internal static class ShortcutHelper
     {

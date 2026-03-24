@@ -1,10 +1,6 @@
 {
-    "folders": [
-        {
-            "path": "."
-        }
-    ],
+    "folders": [],
     "settings": {
-        "dotnet.defaultSolution": "DataLockerWatcher.sln"
+        "dotnet.defaultSolution": "USBWatcher.sln"
     }
 }

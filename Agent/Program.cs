@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 using Microsoft.Toolkit.Uwp.Notifications;
 
-namespace DataLockerWatcherAgent
+namespace USBWatcherAgent
 {
     internal sealed class Config
     {
@@ -40,20 +40,20 @@ namespace DataLockerWatcherAgent
 
     internal static class Program
     {
-        private const string EventSource = "DataLockerWatcher-Agent";
-        private const string HkcuRunValueName = "DataLockerWatcher-Agent";
-        private const string SingleInstanceMutexName = @"Local\DataLockerWatcher-Agent";
+        private const string EventSource = "USBWatcher-Agent";
+        private const string HkcuRunValueName = "USBWatcher-Agent";
+        private const string SingleInstanceMutexName = @"Local\USBWatcher-Agent";
 
         private static readonly string FallbackLogPath =
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DataLockerWatcher-Agent",
-                "DataLockerWatcher-Agent.log");
+                "USBWatcher",
+                "Agent.log");
 
         private static readonly string ConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
-        private static readonly string AgentExePath = Path.Combine(AppContext.BaseDirectory, "DataLockerWatcher-Agent.exe");
-        private static readonly string SyncExePath = Path.Combine(AppContext.BaseDirectory, "DataLockerWatcher-Sync.exe");
-        private static readonly string ToastLogoPngPath = Path.Combine(AppContext.BaseDirectory, "DataLocker.png");
+        private static readonly string AgentExePath = Path.Combine(AppContext.BaseDirectory, "USBWatcher-Agent.exe");
+        private static readonly string SyncExePath = Path.Combine(AppContext.BaseDirectory, "USBWatcher-Sync.exe");
+        private static readonly string ToastLogoPngPath = Path.Combine(AppContext.BaseDirectory, "USBWatcher.png");
 
         private static Config _cfg = new();
 
@@ -110,7 +110,7 @@ namespace DataLockerWatcherAgent
                 _singleInstanceMutex = new Mutex(initiallyOwned: true, name: SingleInstanceMutexName, createdNew: out createdNew);
                 if (!createdNew)
                 {
-                    LogInfo("Another instance of DataLockerWatcher-Agent is already running in this session. Exiting.");
+                    LogInfo("Another instance of USBWatcher-Agent is already running in this session. Exiting.");
                     return;
                 }
             }
@@ -174,7 +174,7 @@ namespace DataLockerWatcherAgent
                         else
                         {
                             LogError($"Unlock EXE not found at: {exePath}");
-                            TryToast("DataLocker", "Unlocker was not found on the CD drive. Reinsert the device and try again.");
+                            TryToast("USBWatcher", "Unlocker was not found on the CD drive. Reinsert the device and try again.");
                         }
                     }
                     catch (Exception ex)
@@ -449,7 +449,7 @@ namespace DataLockerWatcherAgent
                 if (!PnpMatches(pnp, _cfg.Device?.PnpDeviceIdContainsAny))
                     return;
 
-                LogInfo($"DataLocker device detected (locked phase likely). Model='{model}', DeviceID='{deviceId}', PNP='{pnp}'");
+                LogInfo($"USBWatcher device detected (locked phase likely). Model='{model}', DeviceID='{deviceId}', PNP='{pnp}'");
 
                 SetDeviceState(detected: true, unlocked: false, reason: "disk-insert");
 
@@ -465,20 +465,20 @@ namespace DataLockerWatcherAgent
                 string? exeName = string.IsNullOrWhiteSpace(_cfg.Unlock.ExeName) ? null : _cfg.Unlock.ExeName.Trim();
                 if (exeName == null)
                 {
-                    TryToast("DataLocker detected", "Device detected. Please unlock the drive to begin sync.");
+                    TryToast("USBWatcher detected", "Device detected. Please unlock the drive to begin sync.");
                     return;
                 }
 
                 string? cdfsDrive = FindCdfsDriveContainingExe(exeName);
                 if (cdfsDrive == null)
                 {
-                    TryToast("DataLocker detected", "Device detected. Please unlock the drive to begin sync.");
+                    TryToast("USBWatcher detected", "Device detected. Please unlock the drive to begin sync.");
                     return;
                 }
 
                 var builder = new ToastContentBuilder()
-                    .AddText("DataLocker USB Device Detected")
-                    .AddText("Click Unlock to open the DataLocker Unlock Utility. Sync will start after unlock.");
+                    .AddText("USBWatcher USB Device Detected")
+                    .AddText("Click Unlock to open the Unlock Utility. Sync will start after unlock.");
 
                 TryAddToastLogo(builder);
 
@@ -537,7 +537,7 @@ namespace DataLockerWatcherAgent
 
                 _lastSyncLaunchUtc = now;
 
-                LogInfo($"{kind}: DataLocker unlocked volume mounted at {driveLetter} ({fileSystem}). Launching Sync.");
+                LogInfo($"{kind}: USBWatcher unlocked volume mounted at {driveLetter} ({fileSystem}). Launching Sync.");
 
                 LaunchSyncProcess_TrustedUnlockedEvent(hintDrive: driveLetter, reason: $"{kind}: auto-sync");
             }
@@ -687,7 +687,7 @@ namespace DataLockerWatcherAgent
                 string? cdfsDrive = FindCdfsDriveContainingExe(exeName);
                 if (cdfsDrive == null)
                 {
-                    error = "Could not locate the unlock utility on the DataLocker CD drive.";
+                    error = "Could not locate the unlock utility on the device CD drive.";
                     return false;
                 }
 
@@ -1008,11 +1008,11 @@ namespace DataLockerWatcherAgent
 
             public TrayAppContext()
             {
-                _iconDisconnected = LoadEmbeddedIconOrFallback("datalocker-disconnected.ico", SystemIcons.Application);
-                _iconLocked = LoadEmbeddedIconOrFallback("datalocker-locked.ico", SystemIcons.Shield);
-                _iconOk = LoadEmbeddedIconOrFallback("datalocker-ok.ico", SystemIcons.Application);
-                _iconSync = LoadEmbeddedIconOrFallback("datalocker-sync.ico", _iconOk);
-                _iconError = LoadEmbeddedIconOrFallback("datalocker-error.ico", SystemIcons.Error);
+                _iconDisconnected = LoadEmbeddedIconOrFallback("USBWatcher-disconnected.ico", SystemIcons.Application);
+                _iconLocked = LoadEmbeddedIconOrFallback("USBWatcher-locked.ico", SystemIcons.Shield);
+                _iconOk = LoadEmbeddedIconOrFallback("USBWatcher-ok.ico", SystemIcons.Application);
+                _iconSync = LoadEmbeddedIconOrFallback("USBWatcher-sync.ico", _iconOk);
+                _iconError = LoadEmbeddedIconOrFallback("USBWatcher-error.ico", SystemIcons.Error);
 
                 var menu = new ContextMenuStrip();
 
@@ -1025,7 +1025,7 @@ namespace DataLockerWatcherAgent
                     if (!TryLaunchUnlockFromTray(out var err))
                     {
                         LogError($"Unlock failed: {err}");
-                        TryToast("DataLocker", err ?? "Unlock failed.");
+                        TryToast("USBWatcher", err ?? "Unlock failed.");
                     }
                 };
                 menu.Items.Add(_unlockItem);
@@ -1039,7 +1039,7 @@ namespace DataLockerWatcherAgent
                     if (!IsCurrentSessionActiveForSync())
                     {
                         LogInfo("Tray: manual sync requested, but current session is not active. Ignoring.");
-                        TryToast("DataLocker", "Sync can only be started from the active user session.");
+                        TryToast("USBWatcher", "Sync can only be started from the active user session.");
                         return;
                     }
 
@@ -1063,7 +1063,7 @@ namespace DataLockerWatcherAgent
                 {
                     Icon = _iconDisconnected,
                     Visible = true,
-                    Text = "DataLocker Watcher",
+                    Text = "USB Watcher",
                     ContextMenuStrip = menu
                 };
 
@@ -1097,11 +1097,11 @@ namespace DataLockerWatcherAgent
 
                 _notifyIcon.Icon = icon;
                 _notifyIcon.Text =
-                    !_deviceDetected ? "DataLocker Watcher - Not detected" :
-                    !_deviceUnlocked ? "DataLocker Watcher - Locked" :
-                    _syncRunning ? "DataLocker Watcher - Syncing" :
-                    _lastSyncFailed ? "DataLocker Watcher - Sync failed" :
-                    "DataLocker Watcher - Ready";
+                    !_deviceDetected ? "USBWatcher - Not detected" :
+                    !_deviceUnlocked ? "USBWatcher - Locked" :
+                    _syncRunning ? "USBWatcher - Syncing" :
+                    _lastSyncFailed ? "USBWatcher - Sync failed" :
+                    "USBWatcher - Ready";
             }
 
             private void RefreshMenuState()

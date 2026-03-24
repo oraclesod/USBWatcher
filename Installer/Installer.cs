@@ -1,42 +1,43 @@
 using Microsoft.Win32;
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
+using USBWatcher.Common;
 
-namespace DataLockerWatcherInstall
+namespace USBWatcherInstall
 {
     internal sealed class Installer
     {
-        private const string InstallEventSource = "DataLockerWatcher-Install";
-        private const string AgentEventSource = "DataLockerWatcher-Agent";
-        private const string SyncEventSource = "DataLockerWatcher-Sync";
+        private const string SharedEventSource = "USBWatcher";
+        private const string ComponentName = "Install";
 
-        // HKLM Run value name
-        private const string HklmRunValueName = "DataLockerWatcher-Agent-Init";
-        // HKCU Run value name (set by Agent --init)
-        private const string HkcuRunValueName = "DataLockerWatcher-Agent";
+        private const string HklmRunValueName = "USBWatcher-Agent-Init";
+        private const string HkcuRunValueName = "USBWatcher-Agent";
 
-        // Start Menu shortcut + AUMID
-        private const string StartMenuFolderName = "DataLocker Watcher";
-        private const string AgentShortcutName = "DataLocker Watcher - Agent";
-        private const string AgentAumid = "DataLockerWatcher.Agent";
+        private const string StartMenuFolderName = "USB Watcher";
+        private const string AgentShortcutName = "USB Watcher - Agent";
+        private const string AgentAumid = "USBWatcher.Agent";
 
         private static readonly string InstallDir =
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DataLockerWatcher");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "USBWatcher");
 
         private static readonly string InstallLogPath = Path.Combine(InstallDir, "Install.log");
 
-        // Directory where this installer was launched from (typically the publish/output folder / Intune cache)
+        private readonly Logger _logger = new(SharedEventSource, InstallLogPath, ComponentName);
+
         private string SourceDir => AppContext.BaseDirectory;
 
-        private const string AgentExeName = "DataLockerWatcher-Agent.exe";
-        private const string SyncExeName = "DataLockerWatcher-Sync.exe";
+        private const string AgentExeName = "USBWatcher-Agent.exe";
+        private const string SyncExeName = "USBWatcher-Sync.exe";
         private const string InstallExeName = "Install.exe";
         private const string ConfigFileName = "config.json";
-        private const string IconIcoFileName = "DataLocker.ico";
-        private const string IconPngFileName = "DataLocker.png";
+        private const string IconIcoFileName = "USBWatcher.ico";
+        private const string IconPngFileName = "USBWatcher.png";
 
         private static readonly TimeSpan UpgradeSyncWaitTimeout = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan UpgradeSyncPollInterval = TimeSpan.FromSeconds(5);
@@ -46,51 +47,62 @@ namespace DataLockerWatcherInstall
         public int InstallOrRepair(bool repair)
         {
             Directory.CreateDirectory(InstallDir);
-            AppendInstallLog($"{(repair ? "Repair" : "Install")} started.");
+            _logger.Info($"{(repair ? "Repair" : "Install")} started.", EventIds.Install.Started);
 
-            EnsureEventLogSources();
+            EnsureEventLogSource();
 
-            bool existingInstallDetected =
-                File.Exists(Path.Combine(InstallDir, AgentExeName)) ||
-                File.Exists(Path.Combine(InstallDir, SyncExeName));
+            bool existingInstallDetected = IsInstalled();
 
             if (existingInstallDetected)
             {
-                LogInstallEvent("Existing installation detected. Preparing upgrade flow.");
+                _logger.Info(
+                    $"Existing installation detected. {(repair ? "Repair" : "Install")} will run against existing install.",
+                    EventIds.Install.ExistingInstallDetected);
 
                 if (!WaitForSyncToExit(UpgradeSyncWaitTimeout))
                 {
-                    LogInstallEvent(
-                        $"Upgrade aborted because Sync did not exit within {UpgradeSyncWaitTimeout.TotalMinutes:0} minutes.",
-                        EventLogEntryType.Error);
-
-                    AppendInstallLog("Upgrade aborted: Sync still running after timeout.");
+                    _logger.Error(
+                        $"Operation aborted because Sync did not exit within {UpgradeSyncWaitTimeout.TotalMinutes:0} minutes.",
+                        EventIds.Install.SyncTimeout);
                     return 1;
                 }
 
                 if (!StopAgentProcesses())
                 {
-                    LogInstallEvent(
-                        $"Upgrade aborted because Agent did not exit within {AgentStopWaitTimeout.TotalSeconds:0} seconds.",
-                        EventLogEntryType.Error);
-
-                    AppendInstallLog("Upgrade aborted: Agent still running after timeout.");
+                    _logger.Error(
+                        $"Operation aborted because Agent did not exit within {AgentStopWaitTimeout.TotalSeconds:0} seconds.",
+                        EventIds.Install.AgentTimeout);
                     return 1;
                 }
             }
 
-            // Copy payloads
-            CopyPayload(InstallExeName, overwrite: true); // copies the currently running installer
+            CopyPayload(InstallExeName, overwrite: true);
             CopyPayload(AgentExeName, overwrite: true);
             CopyPayload(SyncExeName, overwrite: true);
-            CopyPayload(ConfigFileName, overwrite: true);
+
+            if (repair || !existingInstallDetected)
+            {
+                CopyPayload(ConfigFileName, overwrite: true);
+                _logger.Info(
+                    existingInstallDetected
+                        ? "Repair mode: replaced existing config.json with package config."
+                        : "Install mode on new install: copied package config.json.",
+                    EventIds.Install.ConfigReplaced);
+            }
+            else
+            {
+                MergeInstalledConfigWithPackageConfig();
+                _logger.Info(
+                    "Install mode on existing install: merged config schema and preserved existing values.",
+                    EventIds.Install.ConfigMerged);
+            }
+
             CopyPayloadIfExists(IconIcoFileName, overwrite: true);
             CopyPayloadIfExists(IconPngFileName, overwrite: true);
 
             var agentPath = Path.Combine(InstallDir, AgentExeName);
             var iconPath = Path.Combine(InstallDir, IconIcoFileName);
 
-            // Create Start Menu shortcut (all users) + AUMID for toast activation
             try
             {
                 ShortcutHelper.CreateStartMenuShortcutWithAumid(
@@ -103,82 +115,115 @@ namespace DataLockerWatcherInstall
                     appUserModelId: AgentAumid
                 );
 
-                LogInstallEvent("Created Start Menu shortcut with AUMID for Agent.");
+                _logger.Info("Created Start Menu shortcut with AUMID for Agent.", EventIds.Install.ShortcutCreated);
             }
             catch (Exception ex)
             {
-                LogInstallEvent($"Failed creating Start Menu shortcut/AUMID: {ex}", EventLogEntryType.Warning);
+                _logger.Warn($"Failed creating Start Menu shortcut/AUMID: {ex}", EventIds.Install.Warning);
             }
 
-            // HKLM Run (not RunOnce): runs Agent --init at every user logon
             SetHklmRunInit(agentPath);
+            _logger.Info("Set HKLM Run init value.", EventIds.Install.RunKeySet);
 
-            LogInstallEvent($"{(repair ? "Repair" : "Install")} copied payloads and set HKLM Run init.");
-
-            // If a user is already logged in, run init immediately in that session (best-effort)
             var session = SessionHelper.TryGetActiveSession();
             if (session != null)
             {
-                LogInstallEvent($"Attempting to start Agent init in active session {session.SessionId}...");
+                _logger.Info($"Attempting to start Agent init in active session {session.SessionId}...", EventIds.Install.StartAgentInit);
 
                 bool ok = SessionHelper.TryRunAsActiveUser(agentPath, "--init", hidden: true, out var err);
                 if (ok)
                 {
-                    LogInstallEvent($"Started Agent init in active session {session.SessionId}.", EventLogEntryType.Information);
+                    _logger.Info($"Started Agent init in active session {session.SessionId}.", EventIds.Install.StartAgentInit);
                 }
                 else
                 {
-                    LogInstallEvent(
+                    _logger.Warn(
                         $"Failed to start Agent init in active session {session.SessionId}. {err}",
-                        EventLogEntryType.Warning);
+                        EventIds.Install.Warning);
 
-                    // Fallback: if installer is being run interactively by an admin in the same session,
-                    // a normal Process.Start may work even when session token APIs fail.
                     if (TryStartAgentFallback(agentPath, out var fallbackErr))
                     {
-                        LogInstallEvent("Fallback start of Agent succeeded (Process.Start).", EventLogEntryType.Information);
+                        _logger.Info("Fallback start of Agent succeeded (Process.Start).", EventIds.Install.StartAgentInitFallback);
                     }
                     else
                     {
-                        LogInstallEvent($"Fallback start of Agent failed: {fallbackErr}", EventLogEntryType.Warning);
-                        LogInstallEvent("Agent will start at next user logon via HKLM Run.", EventLogEntryType.Information);
+                        _logger.Warn($"Fallback start of Agent failed: {fallbackErr}", EventIds.Install.Warning);
+                        _logger.Info("Agent will start at next user logon via HKLM Run.", EventIds.Install.StartAgentInitFallback);
                     }
                 }
             }
             else
             {
-                LogInstallEvent("No active session detected; init will run at next user logon.", EventLogEntryType.Warning);
+                _logger.Warn("No active session detected; init will run at next user logon.", EventIds.Install.Warning);
             }
 
-            AppendInstallLog($"{(repair ? "Repair" : "Install")} complete.");
+            _logger.Info($"{(repair ? "Repair" : "Install")} complete.", EventIds.Install.Completed);
+            return 0;
+        }
+
+        public int UpdateConfigValue(string jsonPath, string rawValue)
+        {
+            Directory.CreateDirectory(InstallDir);
+            _logger.Info($"Update started. Path='{jsonPath}' Value='{rawValue}'", EventIds.Install.Started);
+
+            EnsureEventLogSource();
+
+            var installedConfigPath = Path.Combine(InstallDir, ConfigFileName);
+            if (!File.Exists(installedConfigPath))
+            {
+                _logger.Error($"Update failed: installed config not found at '{installedConfigPath}'.", EventIds.Install.Error);
+                return 1;
+            }
+
+            JsonNode? root;
+            try
+            {
+                root = LoadJsonFromFile(installedConfigPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Update failed: unable to read installed config. {ex}", EventIds.Install.Error);
+                return 1;
+            }
+
+            if (root is not JsonObject rootObject)
+            {
+                _logger.Error("Update failed: installed config root is not a JSON object.", EventIds.Install.Error);
+                return 1;
+            }
+
+            if (!TryUpdateExistingPath(rootObject, jsonPath, rawValue, out string? updateError))
+            {
+                _logger.Error($"Update failed: {updateError}", EventIds.Install.Error);
+                return 1;
+            }
+
+            SaveJsonToFile(installedConfigPath, rootObject);
+            _logger.Info($"Updated config path '{jsonPath}'.", EventIds.Install.ConfigUpdated);
             return 0;
         }
 
         public int Uninstall()
         {
             Directory.CreateDirectory(InstallDir);
-            AppendInstallLog("Uninstall started.");
+            _logger.Info("Uninstall started.", EventIds.Install.UninstallStarted);
 
-            EnsureEventLogSources();
+            EnsureEventLogSource();
 
-            // Remove HKLM Run init
             RemoveHklmRunInit();
 
-            // Remove Start Menu folder (all users)
             try
             {
                 ShortcutHelper.RemoveStartMenuFolder(StartMenuFolderName);
-                LogInstallEvent("Removed Start Menu folder: DataLocker Watcher");
+                _logger.Info($"Removed Start Menu folder: {StartMenuFolderName}", EventIds.Install.UninstallStarted);
             }
             catch (Exception ex)
             {
-                LogInstallEvent($"Failed removing Start Menu folder: {ex}", EventLogEntryType.Warning);
+                _logger.Warn($"Failed removing Start Menu folder: {ex}", EventIds.Install.Warning);
             }
 
-            // Stop agent(s) best effort
             StopAgentProcessesBestEffort();
 
-            // Remove HKCU Run for active user (best effort)
             var session = SessionHelper.TryGetActiveSession();
             if (session != null)
             {
@@ -189,7 +234,6 @@ namespace DataLockerWatcherInstall
                     out _);
             }
 
-            // Delete files
             SafeDelete(Path.Combine(InstallDir, InstallExeName));
             SafeDelete(Path.Combine(InstallDir, AgentExeName));
             SafeDelete(Path.Combine(InstallDir, SyncExeName));
@@ -197,14 +241,16 @@ namespace DataLockerWatcherInstall
             SafeDelete(Path.Combine(InstallDir, IconIcoFileName));
             SafeDelete(Path.Combine(InstallDir, IconPngFileName));
 
-            // Keep Install.log for forensics; remove if desired:
-            // SafeDelete(InstallLogPath);
-
             TryDeleteDirIfEmpty(InstallDir);
 
-            LogInstallEvent("Uninstall complete.");
-            AppendInstallLog("Uninstall complete.");
+            _logger.Info("Uninstall complete.", EventIds.Install.UninstallCompleted);
             return 0;
+        }
+
+        private bool IsInstalled()
+        {
+            return File.Exists(Path.Combine(InstallDir, AgentExeName)) ||
+                   File.Exists(Path.Combine(InstallDir, SyncExeName));
         }
 
         private bool WaitForSyncToExit(TimeSpan timeout)
@@ -222,7 +268,7 @@ namespace DataLockerWatcherInstall
                     syncProcesses = Process.GetProcessesByName(processName);
                     if (syncProcesses.Length == 0)
                     {
-                        LogInstallEvent("No running Sync process detected.");
+                        _logger.Info("No running Sync process detected.", EventIds.Install.WaitingForSync);
                         return true;
                     }
 
@@ -232,7 +278,7 @@ namespace DataLockerWatcherInstall
                         {
                             try
                             {
-                                return $"PID={p.Id}, Session={p.SessionId}";
+                                return $"PID={p.Id}, Name={p.ProcessName}, Session={p.SessionId}";
                             }
                             catch
                             {
@@ -240,19 +286,21 @@ namespace DataLockerWatcherInstall
                             }
                         }));
 
-                        LogInstallEvent(
-                            $"Sync is currently running ({syncProcesses.Length} instance(s)); waiting up to {timeout.TotalMinutes:0} minutes for it to finish. Found: {details}");
+                        _logger.Info(
+                            $"Sync is currently running ({syncProcesses.Length} instance(s)); waiting up to {timeout.TotalMinutes:0} minutes for it to finish. Found: {details}",
+                            EventIds.Install.WaitingForSync);
                         firstLog = false;
                     }
                     else
                     {
-                        LogInstallEvent(
-                            $"Sync still running ({syncProcesses.Length} instance(s)); waited {Math.Floor(sw.Elapsed.TotalSeconds):0}s so far...");
+                        _logger.Info(
+                            $"Sync still running ({syncProcesses.Length} instance(s)); waited {Math.Floor(sw.Elapsed.TotalSeconds):0}s so far...",
+                            EventIds.Install.WaitingForSync);
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogInstallEvent($"Error while checking for Sync processes: {ex}", EventLogEntryType.Warning);
+                    _logger.Warn($"Error while checking for Sync processes: {ex}", EventIds.Install.Warning);
                 }
                 finally
                 {
@@ -265,9 +313,9 @@ namespace DataLockerWatcherInstall
                 Thread.Sleep(UpgradeSyncPollInterval);
             }
 
-            LogInstallEvent(
+            _logger.Warn(
                 $"Timed out waiting for Sync to finish after {timeout.TotalMinutes:0} minutes.",
-                EventLogEntryType.Warning);
+                EventIds.Install.SyncTimeout);
 
             return false;
         }
@@ -288,7 +336,7 @@ namespace DataLockerWatcherInstall
 
                     if (agents.Length == 0)
                     {
-                        LogInstallEvent("No Agent processes remain.");
+                        _logger.Info("No Agent processes remain.", EventIds.Install.StoppingAgent);
                         return true;
                     }
 
@@ -296,7 +344,7 @@ namespace DataLockerWatcherInstall
                     {
                         try
                         {
-                            return $"PID={p.Id}, Session={p.SessionId}";
+                            return $"PID={p.Id}, Name={p.ProcessName}, Session={p.SessionId}";
                         }
                         catch
                         {
@@ -304,11 +352,11 @@ namespace DataLockerWatcherInstall
                         }
                     }));
 
-                    LogInstallEvent(
+                    _logger.Info(
                         firstPass
-                            ? $"Stopping Agent process(es) before upgrade. Found: {details}"
+                            ? $"Stopping Agent process(es) before operation. Found: {details}"
                             : $"Agent process(es) still present after {Math.Floor(sw.Elapsed.TotalSeconds):0}s. Found: {details}",
-                        EventLogEntryType.Warning);
+                        EventIds.Install.StoppingAgent);
 
                     foreach (var p in agents)
                     {
@@ -318,9 +366,9 @@ namespace DataLockerWatcherInstall
                         }
                         catch (Exception ex)
                         {
-                            LogInstallEvent(
+                            _logger.Warn(
                                 $"Failed to kill Agent PID={SafePid(p)} Session={SafeSessionId(p)}: {ex.Message}",
-                                EventLogEntryType.Warning);
+                                EventIds.Install.Warning);
                         }
                     }
 
@@ -328,7 +376,7 @@ namespace DataLockerWatcherInstall
                 }
                 catch (Exception ex)
                 {
-                    LogInstallEvent($"Error while stopping Agent processes: {ex}", EventLogEntryType.Warning);
+                    _logger.Warn($"Error while stopping Agent processes: {ex}", EventIds.Install.Warning);
                 }
                 finally
                 {
@@ -348,7 +396,7 @@ namespace DataLockerWatcherInstall
                 {
                     try
                     {
-                        return $"PID={p.Id}, Session={p.SessionId}";
+                        return $"PID={p.Id}, Name={p.ProcessName}, Session={p.SessionId}";
                     }
                     catch
                     {
@@ -356,9 +404,9 @@ namespace DataLockerWatcherInstall
                     }
                 }));
 
-                LogInstallEvent(
+                _logger.Error(
                     $"Agent still appears to be running after waiting {AgentStopWaitTimeout.TotalSeconds:0} seconds. Remaining: {details}",
-                    EventLogEntryType.Error);
+                    EventIds.Install.AgentTimeout);
 
                 foreach (var p in remaining)
                 {
@@ -390,12 +438,305 @@ namespace DataLockerWatcherInstall
                     }
                 }
 
-                LogInstallEvent("Best-effort stop of Agent process(es) completed.");
+                _logger.Info("Best-effort stop of Agent process(es) completed.", EventIds.Install.StoppingAgent);
             }
             catch (Exception ex)
             {
-                LogInstallEvent($"Best-effort stop of Agent process(es) failed: {ex}", EventLogEntryType.Warning);
+                _logger.Warn($"Best-effort stop of Agent process(es) failed: {ex}", EventIds.Install.Warning);
             }
+        }
+
+        private void MergeInstalledConfigWithPackageConfig()
+        {
+            var installedConfigPath = Path.Combine(InstallDir, ConfigFileName);
+            var packageConfigPath = GetPayloadSourcePath(ConfigFileName);
+
+            if (!File.Exists(packageConfigPath))
+                throw new FileNotFoundException($"Package config not found: {packageConfigPath}");
+
+            JsonNode? packageRoot = LoadJsonFromFile(packageConfigPath);
+
+            if (!File.Exists(installedConfigPath))
+            {
+                _logger.Info("Existing install had no config.json. Copying package config.", EventIds.Install.ConfigMerged);
+                File.Copy(packageConfigPath, installedConfigPath, overwrite: true);
+                return;
+            }
+
+            JsonNode? installedRoot = LoadJsonFromFile(installedConfigPath);
+
+            if (installedRoot is not JsonObject installedObject)
+                throw new InvalidOperationException("Installed config root is not a JSON object.");
+
+            if (packageRoot is not JsonObject packageObject)
+                throw new InvalidOperationException("Package config root is not a JSON object.");
+
+            SyncObjectSchema(installedObject, packageObject);
+            SaveJsonToFile(installedConfigPath, installedObject);
+        }
+
+        private void SyncObjectSchema(JsonObject target, JsonObject template)
+        {
+            var targetKeys = target.Select(kvp => kvp.Key).ToList();
+            foreach (var key in targetKeys)
+            {
+                if (!template.ContainsKey(key))
+                    target.Remove(key);
+            }
+
+            foreach (var kvp in template)
+            {
+                var key = kvp.Key;
+                var templateValue = kvp.Value;
+
+                if (!target.ContainsKey(key))
+                {
+                    target[key] = templateValue?.DeepClone();
+                    continue;
+                }
+
+                var existingValue = target[key];
+
+                if (existingValue is JsonObject existingObj && templateValue is JsonObject templateObj)
+                {
+                    SyncObjectSchema(existingObj, templateObj);
+                }
+            }
+        }
+
+        private bool TryUpdateExistingPath(JsonObject root, string path, string rawValue, out string? error)
+        {
+            error = null;
+
+            var segments = path.Split(
+                new[] { ':', '.' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (segments.Length == 0)
+            {
+                error = "JSON path is empty.";
+                return false;
+            }
+
+            JsonObject current = root;
+
+            for (int i = 0; i < segments.Length - 1; i++)
+            {
+                var segment = segments[i];
+
+                if (!current.TryGetPropertyValue(segment, out JsonNode? child) || child is not JsonObject childObject)
+                {
+                    error = $"Path segment '{segment}' does not exist as an object.";
+                    return false;
+                }
+
+                current = childObject;
+            }
+
+            var finalSegment = segments[^1];
+
+            if (!current.TryGetPropertyValue(finalSegment, out JsonNode? existingValue) || existingValue is null)
+            {
+                error = $"Path '{path}' does not exist.";
+                return false;
+            }
+
+            if (!TryCreateReplacementNode(existingValue, rawValue, out JsonNode? replacement, out error))
+                return false;
+
+            current[finalSegment] = replacement;
+            return true;
+        }
+
+        private bool TryCreateReplacementNode(JsonNode existingValue, string rawValue, out JsonNode? replacement, out string? error)
+        {
+            replacement = null;
+            error = null;
+
+            if (existingValue is JsonArray existingArray)
+            {
+                var items = ParseArrayArgument(rawValue);
+                var newArray = new JsonArray();
+
+                Type? arrayElementType = GetArrayElementType(existingArray);
+
+                foreach (var item in items)
+                {
+                    if (!TryCreateTypedJsonValue(item, arrayElementType, out JsonNode? itemNode, out error))
+                        return false;
+
+                    newArray.Add(itemNode);
+                }
+
+                replacement = newArray;
+                return true;
+            }
+
+            if (existingValue is JsonObject)
+            {
+                error = "Updating entire object nodes is not supported. Update a leaf property instead.";
+                return false;
+            }
+
+            Type? scalarType = GetJsonScalarType(existingValue);
+            return TryCreateTypedJsonValue(rawValue, scalarType, out replacement, out error);
+        }
+
+        private Type? GetArrayElementType(JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                if (item is null)
+                    continue;
+
+                var t = GetJsonScalarType(item);
+                if (t != null)
+                    return t;
+            }
+
+            return typeof(string);
+        }
+
+        private Type? GetJsonScalarType(JsonNode node)
+        {
+            if (node is not JsonValue value)
+                return null;
+
+            if (value.TryGetValue<string>(out _)) return typeof(string);
+            if (value.TryGetValue<bool>(out _)) return typeof(bool);
+            if (value.TryGetValue<int>(out _)) return typeof(int);
+            if (value.TryGetValue<long>(out _)) return typeof(long);
+            if (value.TryGetValue<double>(out _)) return typeof(double);
+            if (value.TryGetValue<decimal>(out _)) return typeof(decimal);
+
+            return typeof(string);
+        }
+
+        private bool TryCreateTypedJsonValue(string rawValue, Type? targetType, out JsonNode? node, out string? error)
+        {
+            node = null;
+            error = null;
+
+            rawValue = TrimMatchingQuotes(rawValue);
+
+            try
+            {
+                if (targetType == typeof(bool))
+                {
+                    if (!bool.TryParse(rawValue, out bool b))
+                    {
+                        error = $"'{rawValue}' is not a valid boolean.";
+                        return false;
+                    }
+
+                    node = JsonValue.Create(b);
+                    return true;
+                }
+
+                if (targetType == typeof(int))
+                {
+                    if (!int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int i))
+                    {
+                        error = $"'{rawValue}' is not a valid integer.";
+                        return false;
+                    }
+
+                    node = JsonValue.Create(i);
+                    return true;
+                }
+
+                if (targetType == typeof(long))
+                {
+                    if (!long.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out long l))
+                    {
+                        error = $"'{rawValue}' is not a valid long integer.";
+                        return false;
+                    }
+
+                    node = JsonValue.Create(l);
+                    return true;
+                }
+
+                if (targetType == typeof(double))
+                {
+                    if (!double.TryParse(rawValue, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double d))
+                    {
+                        error = $"'{rawValue}' is not a valid number.";
+                        return false;
+                    }
+
+                    node = JsonValue.Create(d);
+                    return true;
+                }
+
+                if (targetType == typeof(decimal))
+                {
+                    if (!decimal.TryParse(rawValue, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out decimal m))
+                    {
+                        error = $"'{rawValue}' is not a valid decimal.";
+                        return false;
+                    }
+
+                    node = JsonValue.Create(m);
+                    return true;
+                }
+
+                node = JsonValue.Create(rawValue);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        private string[] ParseArrayArgument(string rawValue)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue))
+                return Array.Empty<string>();
+
+            return rawValue
+                .Split(',', StringSplitOptions.TrimEntries)
+                .Select(TrimMatchingQuotes)
+                .Where(x => x != null)
+                .Select(x => x!)
+                .ToArray();
+        }
+
+        private static string TrimMatchingQuotes(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return value;
+
+            value = value.Trim();
+
+            if (value.Length >= 2)
+            {
+                if ((value[0] == '"' && value[^1] == '"') ||
+                    (value[0] == '\'' && value[^1] == '\''))
+                {
+                    return value.Substring(1, value.Length - 2);
+                }
+            }
+
+            return value;
+        }
+
+        private JsonNode? LoadJsonFromFile(string path)
+        {
+            var json = File.ReadAllText(path);
+            return JsonNode.Parse(json);
+        }
+
+        private void SaveJsonToFile(string path, JsonNode node)
+        {
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true
+            };
+
+            File.WriteAllText(path, node.ToJsonString(options));
         }
 
         private bool TryStartAgentFallback(string agentPath, out string? error)
@@ -450,7 +791,7 @@ namespace DataLockerWatcherInstall
             }
             catch (Exception ex)
             {
-                LogInstallEvent($"Failed removing HKLM Run '{HklmRunValueName}': {ex.Message}", EventLogEntryType.Warning);
+                _logger.Warn($"Failed removing HKLM Run '{HklmRunValueName}': {ex.Message}", EventIds.Install.Warning);
             }
         }
 
@@ -462,9 +803,9 @@ namespace DataLockerWatcherInstall
             if (!File.Exists(src))
                 throw new FileNotFoundException($"Required payload not found: {src}");
 
-            LogInstallEvent($"Copying payload '{fileName}' from '{src}' to '{dst}'.");
+            _logger.Info($"Copying payload '{fileName}' from '{src}' to '{dst}'.", EventIds.Install.CopyingPayload);
             File.Copy(src, dst, overwrite);
-            LogInstallEvent($"Copied payload '{fileName}'.");
+            _logger.Info($"Copied payload '{fileName}'.", EventIds.Install.CopyingPayload);
         }
 
         private void CopyPayloadIfExists(string fileName, bool overwrite)
@@ -472,21 +813,16 @@ namespace DataLockerWatcherInstall
             var src = GetPayloadSourcePath(fileName, allowMissing: true);
             if (!File.Exists(src))
             {
-                LogInstallEvent($"Optional payload '{fileName}' not found at '{src}', skipping.");
+                _logger.Info($"Optional payload '{fileName}' not found at '{src}', skipping.", EventIds.Install.CopyingPayload);
                 return;
             }
 
             var dst = Path.Combine(InstallDir, fileName);
-            LogInstallEvent($"Copying optional payload '{fileName}' from '{src}' to '{dst}'.");
+            _logger.Info($"Copying optional payload '{fileName}' from '{src}' to '{dst}'.", EventIds.Install.CopyingPayload);
             File.Copy(src, dst, overwrite);
-            LogInstallEvent($"Copied optional payload '{fileName}'.");
+            _logger.Info($"Copied optional payload '{fileName}'.", EventIds.Install.CopyingPayload);
         }
 
-        /// <summary>
-        /// Resolve the source file on disk for a payload.
-        /// Special-case: Install.exe should be the currently running installer EXE,
-        /// even if the built filename is different.
-        /// </summary>
         private string GetPayloadSourcePath(string fileName, bool allowMissing = false)
         {
             if (string.Equals(fileName, InstallExeName, StringComparison.OrdinalIgnoreCase))
@@ -517,7 +853,7 @@ namespace DataLockerWatcherInstall
             }
             catch (Exception ex)
             {
-                LogInstallEvent($"Failed to delete {path}: {ex.Message}", EventLogEntryType.Warning);
+                _logger.Warn($"Failed to delete {path}: {ex.Message}", EventIds.Install.Warning);
             }
         }
 
@@ -531,46 +867,17 @@ namespace DataLockerWatcherInstall
             catch { }
         }
 
-        private void EnsureEventLogSources()
-        {
-            EnsureEventSource(InstallEventSource);
-            EnsureEventSource(AgentEventSource);
-            EnsureEventSource(SyncEventSource);
-        }
-
-        private void EnsureEventSource(string source)
+        private void EnsureEventLogSource()
         {
             try
             {
-                if (!EventLog.SourceExists(source))
-                    EventLog.CreateEventSource(source, "Application");
+                if (!EventLog.SourceExists(SharedEventSource))
+                    EventLog.CreateEventSource(SharedEventSource, "Application");
             }
             catch
             {
-                // ignore; apps will fallback to file logs
+                // Fallback file logging will be used.
             }
-        }
-
-        public void LogInstallEvent(string message, EventLogEntryType type = EventLogEntryType.Information)
-        {
-            try
-            {
-                EventLog.WriteEntry(InstallEventSource, message, type);
-            }
-            catch
-            {
-                AppendInstallLog($"[{type}] {message}");
-            }
-        }
-
-        private void AppendInstallLog(string message)
-        {
-            try
-            {
-                Directory.CreateDirectory(InstallDir);
-                File.AppendAllText(InstallLogPath, $"{DateTime.Now:O}: {message}{Environment.NewLine}");
-            }
-            catch { }
         }
 
         private static int SafePid(Process p)

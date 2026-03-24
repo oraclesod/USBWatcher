@@ -7,10 +7,11 @@ using System.Text.Json;
 using CommunityToolkit.WinUI.Notifications;
 using SharpCompress.Common;
 using SharpCompress.Readers;
+using USBWatcher.Common;
 using Windows.Data.Xml.Dom;
 using Windows.UI.Notifications;
 
-namespace DataLockerWatcherSync
+namespace USBWatcherSync
 {
     internal sealed class Config
     {
@@ -40,17 +41,20 @@ namespace DataLockerWatcherSync
 
     internal static class Program
     {
-        private const string EventSource = "DataLockerWatcher-Sync";
+        private const string SharedEventSource = "USBWatcher";
+        private const string ComponentName = "Sync";
 
-        // Reuse Agent’s AUMID because your Installer registers a Start Menu shortcut for Agent.
+        // Reuse Agent’s AUMID because the Installer registers a Start Menu shortcut for Agent.
         // Toasts for unpackaged Win32 require the AUMID to exist as a shortcut property.
-        private const string ToastAumid = "DataLockerWatcher.Agent";
+        private const string ToastAumid = "USBWatcher.Agent";
 
         private static readonly string FallbackLogPath =
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DataLockerWatcher-Sync",
-                "DataLockerWatcher-Sync.log");
+                "USBWatcher",
+                "Sync.log");
+
+        private static readonly Logger Logger = new(SharedEventSource, FallbackLogPath, ComponentName);
 
         private static readonly string ConfigPath =
             Path.Combine(AppContext.BaseDirectory, "config.json");
@@ -73,17 +77,17 @@ namespace DataLockerWatcherSync
                 string? hintDrive = TryGetArg(args, "--hintDrive"); // "E:"
                 LogInfo($"Sync start. user={Environment.UserName} hintDrive={hintDrive ?? "<none>"} mode={cfg.Sync.Mode}");
 
-                string? driveRoot = FindDataLockerDriveRoot(cfg.Device.PnpDeviceIdContainsAny, hintDrive);
+                string? driveRoot = FindUSBDriveRoot(cfg.Device.PnpDeviceIdContainsAny, hintDrive);
                 if (driveRoot == null)
                 {
-                    ToastWarn("DataLocker Sync", "Could not detect your unlocked DataLocker USB drive. Please reconnect and unlock, then try again.");
-                    LogError("No unlocked DataLocker drive found. Exiting.");
+                    ToastWarn("USBWatcher Sync", "Could not detect your unlocked USB drive. Please reconnect and unlock, then try again.");
+                    LogError("No unlocked USB drive found. Exiting.");
                     return EXIT_DRIVE_NOT_FOUND;
                 }
 
                 if (!CanAccessSyncSource(cfg.Sync, out var accessErr))
                 {
-                    ToastWarn("DataLocker Sync", "Cannot access the DataLocker sync source. Check VPN/connection or contact IT.");
+                    ToastWarn("USBWatcher Sync", "Cannot access the USBWatcher sync source. Check VPN/connection or contact IT.");
                     LogError($"Source access failed: {accessErr}");
                     return EXIT_SHARE_ACCESS_FAILED;
                 }
@@ -91,7 +95,7 @@ namespace DataLockerWatcherSync
                 string targetFolder = Path.Combine(driveRoot, cfg.Sync.TargetFolder);
                 Directory.CreateDirectory(targetFolder);
 
-                ToastInfo("DataLocker Sync", "File sync has started. Please do not remove your DataLocker USB drive.");
+                ToastInfo("USBWatcher Sync", "File sync has started. Please do not remove your USB drive.");
                 LogInfo($"Resolved target folder: '{targetFolder}'");
 
                 int rc = cfg.Sync.Mode switch
@@ -103,12 +107,12 @@ namespace DataLockerWatcherSync
 
                 if (rc >= 0 && rc <= 7)
                 {
-                    ToastInfo("DataLocker Sync", "Sync completed successfully.");
+                    ToastInfo("USBWatcher Sync", "Sync completed successfully.");
                     LogInfo("Sync completed successfully.");
                     return EXIT_SUCCESS;
                 }
 
-                ToastError("DataLocker Sync", $"Sync failed (robocopy={rc}). Please try again or contact IT.");
+                ToastError("USBWatcher Sync", $"Sync failed (robocopy={rc}). Please try again or contact IT.");
                 LogError($"Sync failed. Robocopy exit code={rc}.");
                 return EXIT_GENERAL_FAILURE;
             }
@@ -126,7 +130,7 @@ namespace DataLockerWatcherSync
             }
             catch (Exception ex)
             {
-                ToastError("DataLocker Sync", "Sync failed due to an unexpected error. Please contact IT.");
+                ToastError("USBWatcher Sync", "Sync failed due to an unexpected error. Please contact IT.");
                 LogError($"Unhandled exception: {ex}");
                 return EXIT_GENERAL_FAILURE;
             }
@@ -157,7 +161,7 @@ namespace DataLockerWatcherSync
             {
                 RecreateEmptyDirectory(tempExtractFolder);
 
-                ToastInfo("DataLocker Sync", "Encrypted package detected. Extracting files before sync.");
+                ToastInfo("USBWatcher Sync", "Encrypted package detected. Extracting files before sync.");
                 LogInfo($"Extracting ZIP '{zipPath}' to '{tempExtractFolder}'");
 
                 ExtractEncryptedZip(zipPath, cfg.Sync.Key, tempExtractFolder);
@@ -176,7 +180,7 @@ namespace DataLockerWatcherSync
                 }
                 catch (Exception ex)
                 {
-                    LogError($"Failed to remove temp extract folder '{tempExtractFolder}': {ex}");
+                    LogWarn($"Failed to remove temp extract folder '{tempExtractFolder}': {ex}");
                 }
             }
         }
@@ -293,7 +297,7 @@ namespace DataLockerWatcherSync
         private static int RunRobocopy(string source, string target, string? excludeDir, out string logPath)
         {
             string robocopy = Path.Combine(Environment.SystemDirectory, "robocopy.exe");
-            logPath = Path.Combine(Path.GetTempPath(), "DataLockerWatcher-Robocopy.log");
+            logPath = Path.Combine(Path.GetTempPath(), "USBWatcher-Robocopy.log");
 
             string args = $"\"{source}\" \"{target}\" /MIR /Z /R:1 /W:5 /NP /LOG:\"{logPath}\"";
 
@@ -358,7 +362,7 @@ namespace DataLockerWatcherSync
             return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
 
-        private static string? FindDataLockerDriveRoot(string[] pnpContainsAny, string? hintDrive)
+        private static string? FindUSBDriveRoot(string[] pnpContainsAny, string? hintDrive)
         {
             if (!string.IsNullOrWhiteSpace(hintDrive))
             {
@@ -510,7 +514,7 @@ namespace DataLockerWatcherSync
         {
             try
             {
-                var iconPath = Path.Combine(AppContext.BaseDirectory, "datalocker.png");
+                var iconPath = Path.Combine(AppContext.BaseDirectory, "USBWatcher.png");
                 Uri? iconUri = File.Exists(iconPath) ? new Uri(iconPath) : null;
 
                 var builder = new ToastContentBuilder()
@@ -534,32 +538,12 @@ namespace DataLockerWatcherSync
             }
             catch (Exception ex)
             {
-                LogError($"Toast failed: {ex.Message}");
+                LogWarn($"Toast failed: {ex.Message}");
             }
         }
 
-        private static void LogInfo(string msg) => Log(msg, EventLogEntryType.Information);
-        private static void LogError(string msg) => Log(msg, EventLogEntryType.Error);
-
-        private static void Log(string msg, EventLogEntryType type)
-        {
-            try
-            {
-                EventLog.WriteEntry(EventSource, msg, type);
-            }
-            catch
-            {
-                try
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(FallbackLogPath)!);
-                    File.AppendAllText(
-                        FallbackLogPath,
-                        $"[{DateTime.Now:O}] {type}: {msg}{Environment.NewLine}");
-                }
-                catch
-                {
-                }
-            }
-        }
+        private static void LogInfo(string msg) => Logger.Info(msg, EventIds.Sync.Started);
+        private static void LogWarn(string msg) => Logger.Warn(msg, EventIds.Sync.Warning);
+        private static void LogError(string msg) => Logger.Error(msg, EventIds.Sync.Error);
     }
 }

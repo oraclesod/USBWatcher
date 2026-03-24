@@ -3,7 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 
-namespace DataLockerWatcherInstall
+namespace USBWatcherInstall
 {
     internal sealed class ActiveSession
     {

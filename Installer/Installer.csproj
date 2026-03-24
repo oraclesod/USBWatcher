@@ -17,18 +17,21 @@
     <!-- IMPORTANT: keep trimming off unless you've validated WinRT/toasts under trimming -->
     <PublishTrimmed>false</PublishTrimmed>
 
-    <AssemblyTitle>DataLockerWatcherInstall</AssemblyTitle>
+    <AssemblyTitle>USBWatcherInstall</AssemblyTitle>
     <AssemblyName>Install</AssemblyName>
-    <Product>DataLockerWatcher - Install</Product>
+    <Product>USBWatcher - Install</Product>
     <Copyright>Copyright © 2026</Copyright>
-    <AssemblyVersion>1.0.0.5</AssemblyVersion>
-    <FileVersion>1.0.0.5</FileVersion>
+    <AssemblyVersion>1.0.1.2</AssemblyVersion>
+    <FileVersion>1.0.1.2</FileVersion>
+    <Version>1.0.1.2</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="System.DirectoryServices.AccountManagement" Version="9.0.5" />
+    <Compile Include="..\Common\Logger.cs" Link="Common\Logger.cs" />
+    <Compile Include="..\Common\EventIds.cs" Link="Common\EventIds.cs" />
   </ItemGroup>
 
 </Project>
