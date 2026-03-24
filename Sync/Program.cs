@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Reflection;
 using System.Text.Json;
 using CommunityToolkit.WinUI.Notifications;
 using SharpCompress.Common;
@@ -80,14 +81,14 @@ namespace USBWatcherSync
                 string? driveRoot = FindUSBDriveRoot(cfg.Device.PnpDeviceIdContainsAny, hintDrive);
                 if (driveRoot == null)
                 {
-                    ToastWarn("USB Watcher Sync", "Could not detect your unlocked USB drive. Please reconnect and unlock, then try again.");
+                    ToastWarn("Sync Failed", "Could not detect your unlocked USB drive. Please reconnect and unlock, then try again.");
                     LogError("No unlocked USB drive found. Exiting.");
                     return EXIT_DRIVE_NOT_FOUND;
                 }
 
                 if (!CanAccessSyncSource(cfg.Sync, out var accessErr))
                 {
-                    ToastWarn("USB Watcher Sync", "Cannot access the sync source. Check VPN/connection or contact IT.");
+                    ToastWarn("Sync Failed", "Cannot access the sync source. Check VPN/connection or contact IT.");
                     LogError($"Source access failed: {accessErr}");
                     return EXIT_SHARE_ACCESS_FAILED;
                 }
@@ -95,7 +96,7 @@ namespace USBWatcherSync
                 string targetFolder = Path.Combine(driveRoot, cfg.Sync.TargetFolder);
                 Directory.CreateDirectory(targetFolder);
 
-                ToastInfo("USB Watcher Sync", "File sync has started. Please do not remove your USB drive.");
+                ToastInfo("Sync Started", "Please do not remove your USB drive.");
                 LogInfo($"Resolved target folder: '{targetFolder}'", EventIds.Sync.Started);
 
                 int rc = cfg.Sync.Mode switch
@@ -107,18 +108,18 @@ namespace USBWatcherSync
 
                 if (rc >= 0 && rc <= 7)
                 {
-                    ToastInfo("USB Watcher Sync", "Sync completed successfully.");
+                    ToastInfo("Sync Complete", "Sync completed successfully.");
                     LogInfo("Sync completed successfully.", EventIds.Sync.Completed);
                     return EXIT_SUCCESS;
                 }
 
-                ToastError("USB Watcher Sync", $"Sync failed (robocopy={rc}). Please try again or contact IT.");
+                ToastError("Sync Failed", $"Sync failed (robocopy={rc}). Please try again or contact IT.");
                 LogError($"Sync failed. Robocopy exit code={rc}.");
                 return EXIT_GENERAL_FAILURE;
             }
             catch (FileNotFoundException ex) when (string.Equals(Path.GetFileName(ex.FileName), "config.json", StringComparison.OrdinalIgnoreCase))
             {
-                ToastError("USB Watcher Sync", "Sync configuration file is missing. Please contact IT.");
+                ToastError("Sync Failed", "Sync configuration file is missing. Please contact IT.");
                 LogError($"Config not found: {ex.FileName}");
                 return EXIT_CONFIG_ERROR;
             }
@@ -126,13 +127,13 @@ namespace USBWatcherSync
                 ex.Message.StartsWith("Invalid config.json", StringComparison.OrdinalIgnoreCase) ||
                 ex.Message.StartsWith("Unsupported Sync.Mode", StringComparison.OrdinalIgnoreCase))
             {
-                ToastError("USB Watcher Sync", "Sync configuration is invalid. Please contact IT.");
+                ToastError("Sync Failed", "Sync configuration is invalid. Please contact IT.");
                 LogError(ex.Message);
                 return EXIT_CONFIG_ERROR;
             }
             catch (Exception ex)
             {
-                ToastError("USB Watcher Sync", "Sync failed due to an unexpected error. Please contact IT.");
+                ToastError("Sync Failed", "Sync failed due to an unexpected error. Please contact IT.");
                 LogError($"Unhandled exception: {ex}");
                 return EXIT_GENERAL_FAILURE;
             }
@@ -508,16 +509,78 @@ namespace USBWatcherSync
         private static string EscapeWmi(string s) =>
             s.Replace("\\", "\\\\").Replace("'", "\\'");
 
+        private const string ToastLogoResourceEndsWith = "USBWatcher.png";
+
+        private static readonly string ToastTempDir =
+            Path.Combine(Path.GetTempPath(), "USBWatcher");
+
+        private static readonly string ToastLogoTempPath =
+            Path.Combine(ToastTempDir, "USBWatcher.png");
+
         private static void ToastInfo(string title, string body) => TryShowToast(title, body);
         private static void ToastWarn(string title, string body) => TryShowToast(title, body);
         private static void ToastError(string title, string body) => TryShowToast(title, body);
+
+        private static string? EnsureToastLogoExtracted()
+        {
+            try
+            {
+                if (File.Exists(ToastLogoTempPath))
+                    return ToastLogoTempPath;
+
+                Directory.CreateDirectory(ToastTempDir);
+
+                var asm = Assembly.GetExecutingAssembly();
+                string? resourceName = asm.GetManifestResourceNames()
+                    .FirstOrDefault(n => n.EndsWith(ToastLogoResourceEndsWith, StringComparison.OrdinalIgnoreCase));
+
+                if (string.IsNullOrWhiteSpace(resourceName))
+                {
+                    LogWarn($"Embedded toast logo resource not found: {ToastLogoResourceEndsWith}");
+                    return null;
+                }
+
+                using var resourceStream = asm.GetManifestResourceStream(resourceName);
+                if (resourceStream == null)
+                {
+                    LogWarn($"Embedded toast logo stream was null: {resourceName}");
+                    return null;
+                }
+
+                using var fileStream = new FileStream(ToastLogoTempPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                resourceStream.CopyTo(fileStream);
+
+                return ToastLogoTempPath;
+            }
+            catch (Exception ex)
+            {
+                LogWarn($"Failed extracting toast logo to temp: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static Uri? GetToastLogoUri()
+        {
+            try
+            {
+                string? path = EnsureToastLogoExtracted();
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    return null;
+
+                return new Uri(path);
+            }
+            catch (Exception ex)
+            {
+                LogWarn($"Failed creating toast logo URI: {ex.Message}");
+                return null;
+            }
+        }
 
         private static void TryShowToast(string title, string body)
         {
             try
             {
-                var iconPath = Path.Combine(AppContext.BaseDirectory, "USBWatcher.png");
-                Uri? iconUri = File.Exists(iconPath) ? new Uri(iconPath) : null;
+                Uri? iconUri = GetToastLogoUri();
 
                 var builder = new ToastContentBuilder()
                     .AddText(title)

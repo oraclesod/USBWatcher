@@ -36,6 +36,7 @@
     <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.2" />
     <PackageReference Include="System.Management" Version="10.0.2" />
     <PackageReference Include="SharpCompress" Version="0.47.0" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher.png" />
     <Compile Include="..\Common\Logger.cs" Link="Common\Logger.cs" />
     <Compile Include="..\Common\EventIds.cs" Link="Common\EventIds.cs" />
   </ItemGroup>

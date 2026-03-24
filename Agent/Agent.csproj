@@ -18,16 +18,18 @@
     <!-- IMPORTANT: keep trimming off unless you've validated WinRT/toasts under trimming -->
     <PublishTrimmed>false</PublishTrimmed>
 
-    <AssemblyTitle>USBWatcherAgent</AssemblyTitle>
+    <AssemblyTitle>USB Watcher</AssemblyTitle>
     <Product>USBWatcher - Agent</Product>
     <AssemblyName>USBWatcher-Agent</AssemblyName>
     <RootNamespace>USBWatcherAgent</RootNamespace>
+    <Description>USB Watcher</Description>
+
     <ApplicationIcon>..\Common\Assets\USBWatcher.ico</ApplicationIcon>
 
     <Copyright>Copyright © 2026</Copyright>
-    <AssemblyVersion>1.0.5.3</AssemblyVersion>
-    <Version>1.0.5.3</Version>
-    <FileVersion>1.0.5.3</FileVersion>
+    <AssemblyVersion>1.0.5.4</AssemblyVersion>
+    <Version>1.0.5.4</Version>
+    <FileVersion>1.0.5.4</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,6 +38,7 @@
     <PackageReference Include="System.DirectoryServices.AccountManagement" Version="9.0.5" />
     <PackageReference Include="System.Management" Version="10.0.2" />
     <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
+    <EmbeddedResource Include="..\Common\Assets\USBWatcher.png" />
     <EmbeddedResource Include="..\Common\Assets\USBWatcher-sync.ico" />
     <EmbeddedResource Include="..\Common\Assets\USBWatcher-error.ico" />
     <EmbeddedResource Include="..\Common\Assets\USBWatcher.ico" />

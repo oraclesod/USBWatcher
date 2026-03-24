@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -36,8 +37,6 @@ namespace USBWatcherInstall
         private const string SyncExeName = "USBWatcher-Sync.exe";
         private const string InstallExeName = "Install.exe";
         private const string ConfigFileName = "config.json";
-        private const string IconIcoFileName = "USBWatcher.ico";
-        private const string IconPngFileName = "USBWatcher.png";
 
         private static readonly TimeSpan UpgradeSyncWaitTimeout = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan UpgradeSyncPollInterval = TimeSpan.FromSeconds(5);
@@ -80,28 +79,9 @@ namespace USBWatcherInstall
             CopyPayload(AgentExeName, overwrite: true);
             CopyPayload(SyncExeName, overwrite: true);
 
-            if (repair || !existingInstallDetected)
-            {
-                CopyPayload(ConfigFileName, overwrite: true);
-                _logger.Info(
-                    existingInstallDetected
-                        ? "Repair mode: replaced existing config.json with package config."
-                        : "Install mode on new install: copied package config.json.",
-                    EventIds.Install.ConfigReplaced);
-            }
-            else
-            {
-                MergeInstalledConfigWithPackageConfig();
-                _logger.Info(
-                    "Install mode on existing install: merged config schema and preserved existing values.",
-                    EventIds.Install.ConfigMerged);
-            }
-
-            CopyPayloadIfExists(IconIcoFileName, overwrite: true);
-            CopyPayloadIfExists(IconPngFileName, overwrite: true);
+            ApplyConfig(repair, existingInstallDetected);
 
             var agentPath = Path.Combine(InstallDir, AgentExeName);
-            var iconPath = Path.Combine(InstallDir, IconIcoFileName);
 
             try
             {
@@ -111,8 +91,8 @@ namespace USBWatcherInstall
                     targetPath: agentPath,
                     arguments: "",
                     workingDirectory: InstallDir,
-                    iconPath: File.Exists(iconPath) ? iconPath : "",
-                    appUserModelId: AgentAumid
+                    appUserModelId: AgentAumid,
+                    description: "USB Watcher"
                 );
 
                 _logger.Info("Created Start Menu shortcut with AUMID for Agent.", EventIds.Install.ShortcutCreated);
@@ -238,8 +218,6 @@ namespace USBWatcherInstall
             SafeDelete(Path.Combine(InstallDir, AgentExeName));
             SafeDelete(Path.Combine(InstallDir, SyncExeName));
             SafeDelete(Path.Combine(InstallDir, ConfigFileName));
-            SafeDelete(Path.Combine(InstallDir, IconIcoFileName));
-            SafeDelete(Path.Combine(InstallDir, IconPngFileName));
 
             TryDeleteDirIfEmpty(InstallDir);
 
@@ -446,33 +424,98 @@ namespace USBWatcherInstall
             }
         }
 
-        private void MergeInstalledConfigWithPackageConfig()
+        private void ApplyConfig(bool repair, bool existingInstallDetected)
         {
             var installedConfigPath = Path.Combine(InstallDir, ConfigFileName);
-            var packageConfigPath = GetPayloadSourcePath(ConfigFileName);
 
-            if (!File.Exists(packageConfigPath))
-                throw new FileNotFoundException($"Package config not found: {packageConfigPath}");
+            if (!TryGetPreferredConfigContent(out string configContent, out string configSourceDescription))
+                throw new FileNotFoundException("No config.json was found in the source folder or embedded assets.");
 
-            JsonNode? packageRoot = LoadJsonFromFile(packageConfigPath);
+            if (repair || !existingInstallDetected)
+            {
+                File.WriteAllText(installedConfigPath, configContent);
+                _logger.Info(
+                    existingInstallDetected
+                        ? $"Repair mode: replaced existing config.json using {configSourceDescription}."
+                        : $"Install mode on new install: copied config.json using {configSourceDescription}.",
+                    EventIds.Install.ConfigReplaced);
+                return;
+            }
+
+            JsonNode? packageRoot = JsonNode.Parse(configContent);
+            if (packageRoot is not JsonObject packageObject)
+                throw new InvalidOperationException("Package config root is not a JSON object.");
 
             if (!File.Exists(installedConfigPath))
             {
-                _logger.Info("Existing install had no config.json. Copying package config.", EventIds.Install.ConfigMerged);
-                File.Copy(packageConfigPath, installedConfigPath, overwrite: true);
+                _logger.Info(
+                    $"Existing install had no config.json. Copying package config from {configSourceDescription}.",
+                    EventIds.Install.ConfigMerged);
+                File.WriteAllText(installedConfigPath, configContent);
                 return;
             }
 
             JsonNode? installedRoot = LoadJsonFromFile(installedConfigPath);
-
             if (installedRoot is not JsonObject installedObject)
                 throw new InvalidOperationException("Installed config root is not a JSON object.");
 
-            if (packageRoot is not JsonObject packageObject)
-                throw new InvalidOperationException("Package config root is not a JSON object.");
-
             SyncObjectSchema(installedObject, packageObject);
             SaveJsonToFile(installedConfigPath, installedObject);
+
+            _logger.Info(
+                $"Install mode on existing install: merged config schema from {configSourceDescription} and preserved existing values.",
+                EventIds.Install.ConfigMerged);
+        }
+
+        private bool TryGetPreferredConfigContent(out string content, out string sourceDescription)
+        {
+            string externalPath = Path.Combine(SourceDir, ConfigFileName);
+            if (File.Exists(externalPath))
+            {
+                content = File.ReadAllText(externalPath);
+                sourceDescription = $"source folder '{externalPath}'";
+                return true;
+            }
+
+            if (TryGetEmbeddedConfigContent(out content))
+            {
+                sourceDescription = "embedded asset";
+                return true;
+            }
+
+            content = string.Empty;
+            sourceDescription = string.Empty;
+            return false;
+        }
+
+        private bool TryGetEmbeddedConfigContent(out string content)
+        {
+            content = string.Empty;
+
+            try
+            {
+                var assembly = typeof(Installer).Assembly;
+                var resourceNames = assembly.GetManifestResourceNames();
+
+                string? resourceName =
+                    resourceNames.FirstOrDefault(r => string.Equals(r, "config.json", StringComparison.OrdinalIgnoreCase)) ??
+                    resourceNames.FirstOrDefault(r => r.EndsWith(".config.json", StringComparison.OrdinalIgnoreCase));
+
+                if (resourceName == null)
+                    return false;
+
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream == null)
+                    return false;
+
+                using var reader = new StreamReader(stream);
+                content = reader.ReadToEnd();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private void SyncObjectSchema(JsonObject target, JsonObject template)

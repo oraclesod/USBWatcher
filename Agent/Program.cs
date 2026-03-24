@@ -57,7 +57,13 @@ namespace USBWatcherAgent
         private static readonly string ConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
         private static readonly string AgentExePath = Path.Combine(AppContext.BaseDirectory, "USBWatcher-Agent.exe");
         private static readonly string SyncExePath = Path.Combine(AppContext.BaseDirectory, "USBWatcher-Sync.exe");
-        private static readonly string ToastLogoPngPath = Path.Combine(AppContext.BaseDirectory, "USBWatcher.png");
+        private const string ToastLogoResourceEndsWith = "USBWatcher.png";
+
+        private static readonly string ToastTempDir =
+            Path.Combine(Path.GetTempPath(), "USBWatcher");
+
+        private static readonly string ToastLogoTempPath =
+            Path.Combine(ToastTempDir, "USBWatcher.png");
 
         private static Config _cfg = new();
 
@@ -936,14 +942,70 @@ namespace USBWatcherAgent
             }
         }
 
+        private static string? EnsureToastLogoExtracted()
+        {
+            try
+            {
+                if (File.Exists(ToastLogoTempPath))
+                    return ToastLogoTempPath;
+
+                Directory.CreateDirectory(ToastTempDir);
+
+                var asm = Assembly.GetExecutingAssembly();
+                string? resourceName = asm.GetManifestResourceNames()
+                    .FirstOrDefault(n => n.EndsWith(ToastLogoResourceEndsWith, StringComparison.OrdinalIgnoreCase));
+
+                if (string.IsNullOrWhiteSpace(resourceName))
+                {
+                    LogWarn($"Embedded toast logo resource not found: {ToastLogoResourceEndsWith}");
+                    return null;
+                }
+
+                using var resourceStream = asm.GetManifestResourceStream(resourceName);
+                if (resourceStream == null)
+                {
+                    LogWarn($"Embedded toast logo stream was null: {resourceName}");
+                    return null;
+                }
+
+                using var fileStream = new FileStream(ToastLogoTempPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                resourceStream.CopyTo(fileStream);
+
+                return ToastLogoTempPath;
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed extracting toast logo to temp: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static Uri? GetToastLogoUri()
+        {
+            try
+            {
+                string? path = EnsureToastLogoExtracted();
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    return null;
+
+                return new Uri(path);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed creating toast logo URI: {ex.Message}");
+                return null;
+            }
+        }
+
         private static void TryAddToastLogo(ToastContentBuilder builder)
         {
             try
             {
-                if (!File.Exists(ToastLogoPngPath))
+                var logoUri = GetToastLogoUri();
+                if (logoUri == null)
                     return;
 
-                builder.AddAppLogoOverride(new Uri(ToastLogoPngPath), ToastGenericAppLogoCrop.Circle);
+                builder.AddAppLogoOverride(logoUri, ToastGenericAppLogoCrop.Circle);
             }
             catch (Exception ex)
             {

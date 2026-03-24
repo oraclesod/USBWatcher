@@ -18,8 +18,8 @@ namespace USBWatcherInstall
             string targetPath,
             string arguments,
             string workingDirectory,
-            string iconPath,
-            string appUserModelId)
+            string appUserModelId,
+            string description)
         {
             if (string.IsNullOrWhiteSpace(startMenuFolderName))
                 throw new ArgumentException("startMenuFolderName is required", nameof(startMenuFolderName));
@@ -46,14 +46,13 @@ namespace USBWatcherInstall
 
             link.SetPath(targetPath);
             link.SetArguments(arguments ?? "");
+            link.SetDescription(description ?? shortcutName);
+            link.SetIconLocation(targetPath, 0);
 
             string wd = !string.IsNullOrWhiteSpace(workingDirectory)
                 ? workingDirectory
                 : (Path.GetDirectoryName(targetPath) ?? programsPath);
             link.SetWorkingDirectory(wd);
-
-            if (!string.IsNullOrWhiteSpace(iconPath) && File.Exists(iconPath))
-                link.SetIconLocation(iconPath, 0);
 
             // Set AUMID via property store before saving
             var propStore = (IPropertyStore)link;
