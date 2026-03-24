@@ -18,8 +18,7 @@ namespace USBWatcherInstall
             string targetPath,
             string arguments,
             string workingDirectory,
-            string appUserModelId,
-            string description)
+            string appUserModelId)
         {
             if (string.IsNullOrWhiteSpace(startMenuFolderName))
                 throw new ArgumentException("startMenuFolderName is required", nameof(startMenuFolderName));
@@ -46,7 +45,7 @@ namespace USBWatcherInstall
 
             link.SetPath(targetPath);
             link.SetArguments(arguments ?? "");
-            link.SetDescription(description ?? shortcutName);
+            link.SetDescription(shortcutName);
             link.SetIconLocation(targetPath, 0);
 
             string wd = !string.IsNullOrWhiteSpace(workingDirectory)

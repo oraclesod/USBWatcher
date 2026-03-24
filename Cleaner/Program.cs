@@ -356,8 +356,10 @@ internal static class Program
                     DeletePath(path);
                 }
 
-                DeleteMatchingFiles(userRoot, "DataLockerWatcher*.log");
-                DeleteMatchingFiles(userRoot, "USBWatcher*.log");
+                DeleteMatchingFiles(Path.Combine(userRoot, @"AppData\Local"), "DataLockerWatcher*.log");
+                DeleteMatchingFiles(Path.Combine(userRoot, @"AppData\Local"), "USBWatcher*.log");
+                DeleteMatchingFiles(Path.Combine(userRoot, @"AppData\Roaming"), "DataLockerWatcher*.log");
+                DeleteMatchingFiles(Path.Combine(userRoot, @"AppData\Roaming"), "USBWatcher*.log");
             }
             catch (Exception ex)
             {
@@ -390,7 +392,7 @@ internal static class Program
             if (!Directory.Exists(root))
                 return;
 
-            foreach (string file in Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
+            foreach (string file in EnumerateFilesSafe(root, pattern))
             {
                 DeletePath(file);
             }
@@ -401,6 +403,55 @@ internal static class Program
         }
     }
 
+    private static IEnumerable<string> EnumerateFilesSafe(string root, string pattern)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+
+        while (pending.Count > 0)
+        {
+            string current = pending.Pop();
+
+            IEnumerable<string> files = Array.Empty<string>();
+            IEnumerable<string> directories = Array.Empty<string>();
+
+            try
+            {
+                files = Directory.EnumerateFiles(current, pattern, SearchOption.TopDirectoryOnly);
+            }
+            catch
+            {
+            }
+
+            foreach (var file in files)
+                yield return file;
+
+            try
+            {
+                directories = Directory.EnumerateDirectories(current, "*", SearchOption.TopDirectoryOnly);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var dir in directories)
+            {
+                try
+                {
+                    var attrs = File.GetAttributes(dir);
+
+                    if ((attrs & FileAttributes.ReparsePoint) != 0)
+                        continue;
+
+                    pending.Push(dir);
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
     private static void DeletePath(string path)
     {
         try

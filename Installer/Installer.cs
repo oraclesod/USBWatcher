@@ -91,8 +91,7 @@ namespace USBWatcherInstall
                     targetPath: agentPath,
                     arguments: "",
                     workingDirectory: InstallDir,
-                    appUserModelId: AgentAumid,
-                    description: "USB Watcher"
+                    appUserModelId: AgentAumid
                 );
 
                 _logger.Info("Created Start Menu shortcut with AUMID for Agent.", EventIds.Install.ShortcutCreated);

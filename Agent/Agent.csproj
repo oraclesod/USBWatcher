@@ -19,7 +19,7 @@
     <PublishTrimmed>false</PublishTrimmed>
 
     <AssemblyTitle>USB Watcher</AssemblyTitle>
-    <Product>USBWatcher - Agent</Product>
+    <Product>USB Watcher</Product>
     <AssemblyName>USBWatcher-Agent</AssemblyName>
     <RootNamespace>USBWatcherAgent</RootNamespace>
     <Description>USB Watcher</Description>
