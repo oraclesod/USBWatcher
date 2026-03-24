@@ -7,8 +7,8 @@ securely synchronize files from an approved network location.
 The solution consists of **three components**:
 
 1.  **Installer** -- SYSTEM-level installer responsible for setup,
-    upgrade, repair, update, and uninstall\
-2.  **Agent** -- User logon-triggered background process\
+    upgrade, repair, update, and uninstall
+2.  **Agent** -- User logon-triggered background process
 3.  **Sync** -- On-demand worker process that performs file
     synchronization
 
@@ -22,7 +22,7 @@ Runs elevated as **SYSTEM** or **Administrator**
 
 Installs binaries to:
 
-C:`\Program `{=tex}Files`\USBWatcher`{=tex}
+`C:\Program Files\USBWatcher`
 
 Creates and maintains: - Windows Event Log source: `USBWatcher` - Start
 Menu shortcut with **AUMID** for toast activation - Shortcut icon
@@ -44,7 +44,7 @@ insertion via WMI - Detects approved devices - Displays toast
 notifications - Launches Sync when required - Extracts toast image (PNG)
 to:
 
-%TEMP%`\USBWatcher`{=tex}\
+`%TEMP%\USBWatcher\`
 
 -   Reuses extracted image for all notifications
 
@@ -56,7 +56,7 @@ Performs the actual synchronization
 
 Responsibilities: - Detects unlocked USB device - Validates source
 access - Copies or extracts files - Uses shared toast image from
-%TEMP%`\USBWatcher`{=tex} - Reports status via toast + logs
+`%TEMP%\USBWatcher\` - Reports status via toast + logs
 
 Modes:
 
@@ -69,9 +69,9 @@ Modes:
 
 # 2. Installer Command-Line Usage
 
-Install.exe install\
-Install.exe repair\
-Install.exe update `<jsonPath>`{=html} `<value>`{=html}\
+Install.exe install
+Install.exe repair
+Install.exe update `<jsonPath>` `<value>`
 Install.exe uninstall
 
 ------------------------------------------------------------------------
@@ -111,7 +111,7 @@ Install.exe uninstall
 
 ## 2.3 update (config only)
 
-Install.exe update Sync:Source "\\server\\share"\
+Install.exe update Sync:Source "\\server\\share"
 Install.exe update Device:PnpDeviceIdContainsAny "VID_1234","VID_5678"
 
 Behavior: - Updates existing config keys only - Does NOT allow adding
@@ -130,12 +130,12 @@ Leaves logs for troubleshooting.
 
 # 3. Installed File Layout
 
-C:`\Program `{=tex}Files`\USBWatcher`{=tex}\
-Install.exe USBWatcher-Agent.exe USBWatcher-Sync.exe config.json
+`C:\Program Files\USBWatcher\`
+Install.exe
+USBWatcher-Agent.exe
+USBWatcher-Sync.exe
+config.json
 Install.log
-
-Note: Icon and toast images are embedded and no longer stored as
-standalone files.
 
 ------------------------------------------------------------------------
 
@@ -164,15 +164,15 @@ Event ID ranges: - 1000--1999 → Installer - 2000--2999 → Agent -
 
   Component   Path
   ----------- ------------------------------------------------------
-  Install     Program Files`\USBWatcher`{=tex}`\Install`{=tex}.log
-  Agent       %LOCALAPPDATA%`\USBWatcher`{=tex}`\Agent`{=tex}.log
-  Sync        %LOCALAPPDATA%`\USBWatcher`{=tex}`\Sync`{=tex}.log
+  Install     `Program Files\USBWatcher\Install.log`
+  Agent       `%LOCALAPPDATA%\USBWatcher\Agent.log`
+  Sync        `%LOCALAPPDATA%\USBWatcher\Sync.log`
 
 ------------------------------------------------------------------------
 
 # 6. Common Project Structure
 
-/USBWatcher.Common Logger.cs EventIds.cs
+USBWatcher.Common Logger.cs EventIds.cs
 
 ------------------------------------------------------------------------
 
@@ -180,19 +180,19 @@ Event ID ranges: - 1000--1999 → Installer - 2000--2999 → Agent -
 
 ## Logon
 
-1.  User logs in\
-2.  HKLM Run triggers Agent --init\
+1.  User logs in
+2.  HKLM Run triggers Agent --init
 3.  Agent initializes and monitors USB
 
 ## Device Workflow
 
-1.  USB inserted\
-2.  Agent detects device\
-3.  Toast prompts user to unlock\
-4.  User launches unlock tool\
-5.  Agent detects unlocked volume\
-6.  Sync executes\
-7.  Files copied/extracted\
+1.  USB inserted
+2.  Agent detects device
+3.  Toast prompts user to unlock
+4.  User launches unlock tool
+5.  Agent detects unlocked volume
+6.  Sync executes
+7.  Files copied/extracted
 8.  Status reported
 
 ------------------------------------------------------------------------
@@ -209,9 +209,11 @@ Event ID ranges: - 1000--1999 → Installer - 2000--2999 → Agent -
 
 # 9. Deployment Notes
 
-For Intune: - Run as SYSTEM\
-- install → install/upgrade\
+For Intune: 
+- Run as SYSTEM
+- install → install/upgrade
 - uninstall → removal
 
-Detection: - File presence\
+Detection:
+- File presence
 - Registry Run key
