@@ -31,7 +31,9 @@ internal static class Program
         "DataLockerWatcher-Install",
         "USBWatcher-Agent",
         "USBWatcher-Sync",
-        "USBWatcher-Install"
+        "USBWatcher-Install",
+        "USBWatcher"
+
     };
 
     private static readonly string[] RegistryValueNamesToRemove =
@@ -39,7 +41,10 @@ internal static class Program
         "DataLockerWatcher-Agent",
         "DataLockerWatcher-Agent-Init",
         "USBWatcher-Agent",
-        "USBWatcher-Agent-Init"
+        "USBWatcher-Agent-Init",
+        "USBWatcher-Init",
+        "USBWatcher"
+        
     };
 
     private static readonly string[] RegistrySubKeysToDelete =
@@ -295,9 +300,11 @@ internal static class Program
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "DataLockerWatcher"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "DataLockerWatcher"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "USBWatcher"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "USB Watcher"),
 
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "DataLocker Watcher"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "USBWatcher"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "USB Watcher"),
 
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), "DataLocker Watcher - Agent.lnk"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), "DataLockerWatcher-Agent.lnk"),

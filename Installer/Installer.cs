@@ -16,11 +16,11 @@ namespace USBWatcherInstall
         private const string SharedEventSource = "USBWatcher";
         private const string ComponentName = "Install";
 
-        private const string HklmRunValueName = "USBWatcher-Agent-Init";
-        private const string HkcuRunValueName = "USBWatcher-Agent";
+        private const string HklmRunValueName = "USBWatcher-Init";
+        private const string HkcuRunValueName = "USBWatcher";
 
         private const string StartMenuFolderName = "USB Watcher";
-        private const string AgentShortcutName = "USB Watcher - Agent";
+        private const string AgentShortcutName = "USB Watcher";
         private const string AgentAumid = "USBWatcher.Agent";
 
         private static readonly string InstallDir =

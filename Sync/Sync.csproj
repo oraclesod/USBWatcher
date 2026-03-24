@@ -25,9 +25,9 @@
     <ApplicationIcon>..\Common\Assets\USBWatcher.ico</ApplicationIcon>
 
     <Copyright>Copyright © 2026</Copyright>
-    <AssemblyVersion>1.0.3.2</AssemblyVersion>
-    <FileVersion>1.0.3.2</FileVersion>
-    <Version>1.0.3.2</Version>
+    <AssemblyVersion>1.0.3.3</AssemblyVersion>
+    <FileVersion>1.0.3.3</FileVersion>
+    <Version>1.0.3.3</Version>
   </PropertyGroup>
 
   <ItemGroup>

@@ -11,6 +11,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Microsoft.Toolkit.Uwp.Notifications;
+using USBWatcher.Common;
 
 namespace USBWatcherAgent
 {
@@ -34,14 +35,15 @@ namespace USBWatcherAgent
         internal sealed class SyncConfig
         {
             public string SourceFolder { get; set; } = "";
-            public string TargetFolderName { get; set; } = "";
+            public string TargetFolder { get; set; } = "";
         }
     }
 
     internal static class Program
     {
-        private const string EventSource = "USBWatcher-Agent";
-        private const string HkcuRunValueName = "USBWatcher-Agent";
+        private const string CommonEventSource = "USBWatcher";
+        private const string ComponentName = "Agent";
+        private const string HkcuRunValueName = "USBWatcher";
         private const string SingleInstanceMutexName = @"Local\USBWatcher-Agent";
 
         private static readonly string FallbackLogPath =
@@ -49,6 +51,8 @@ namespace USBWatcherAgent
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "USBWatcher",
                 "Agent.log");
+
+        private static readonly Logger Logger = new(CommonEventSource, FallbackLogPath, ComponentName);
 
         private static readonly string ConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
         private static readonly string AgentExePath = Path.Combine(AppContext.BaseDirectory, "USBWatcher-Agent.exe");
@@ -174,7 +178,7 @@ namespace USBWatcherAgent
                         else
                         {
                             LogError($"Unlock EXE not found at: {exePath}");
-                            TryToast("USBWatcher", "Unlocker was not found on the CD drive. Reinsert the device and try again.");
+                            TryToast("USB Watcher", "Unlocker was not found on the CD drive. Reinsert the device and try again.");
                         }
                     }
                     catch (Exception ex)
@@ -465,20 +469,20 @@ namespace USBWatcherAgent
                 string? exeName = string.IsNullOrWhiteSpace(_cfg.Unlock.ExeName) ? null : _cfg.Unlock.ExeName.Trim();
                 if (exeName == null)
                 {
-                    TryToast("USBWatcher detected", "Device detected. Please unlock the drive to begin sync.");
+                    TryToast("Encrypted USB device detected", "Please unlock the drive to begin sync.");
                     return;
                 }
 
                 string? cdfsDrive = FindCdfsDriveContainingExe(exeName);
                 if (cdfsDrive == null)
                 {
-                    TryToast("USBWatcher detected", "Device detected. Please unlock the drive to begin sync.");
+                    TryToast("Encrypted USB device detected", "Please unlock the drive to begin sync.");
                     return;
                 }
 
                 var builder = new ToastContentBuilder()
-                    .AddText("USBWatcher USB Device Detected")
-                    .AddText("Click Unlock to open the Unlock Utility. Sync will start after unlock.");
+                    .AddText("Encrypted USB device detected")
+                    .AddText("Click Unlock to open the unlock utility. Sync will start after unlock.");
 
                 TryAddToastLogo(builder);
 
@@ -966,26 +970,9 @@ namespace USBWatcherAgent
 
         private static string EscapeWmi(string s) => s.Replace("\\", "\\\\").Replace("'", "\\'");
 
-        private static void LogInfo(string msg) => Log(msg, EventLogEntryType.Information);
-        private static void LogError(string msg) => Log(msg, EventLogEntryType.Error);
-
-        private static void Log(string msg, EventLogEntryType type)
-        {
-            try
-            {
-                EventLog.WriteEntry(EventSource, msg, type);
-            }
-            catch
-            {
-                try
-                {
-                    File.AppendAllText(FallbackLogPath, $"[{DateTime.Now:O}] {msg}{Environment.NewLine}");
-                }
-                catch
-                {
-                }
-            }
-        }
+        private static void LogInfo(string msg, int eventId = EventIds.Agent.Started) => Logger.Info(msg, eventId);
+        private static void LogWarn(string msg, int eventId = EventIds.Agent.Warning) => Logger.Warn(msg, eventId);
+        private static void LogError(string msg, int eventId = EventIds.Agent.Error) => Logger.Error(msg, eventId);
 
         private sealed class TrayAppContext : ApplicationContext
         {
@@ -1025,7 +1012,7 @@ namespace USBWatcherAgent
                     if (!TryLaunchUnlockFromTray(out var err))
                     {
                         LogError($"Unlock failed: {err}");
-                        TryToast("USBWatcher", err ?? "Unlock failed.");
+                        TryToast("USB Watcher", err ?? "Unlock failed.");
                     }
                 };
                 menu.Items.Add(_unlockItem);
@@ -1039,7 +1026,7 @@ namespace USBWatcherAgent
                     if (!IsCurrentSessionActiveForSync())
                     {
                         LogInfo("Tray: manual sync requested, but current session is not active. Ignoring.");
-                        TryToast("USBWatcher", "Sync can only be started from the active user session.");
+                        TryToast("USB Watcher", "Sync can only be started from the active user session.");
                         return;
                     }
 
@@ -1097,11 +1084,11 @@ namespace USBWatcherAgent
 
                 _notifyIcon.Icon = icon;
                 _notifyIcon.Text =
-                    !_deviceDetected ? "USBWatcher - Not detected" :
-                    !_deviceUnlocked ? "USBWatcher - Locked" :
-                    _syncRunning ? "USBWatcher - Syncing" :
-                    _lastSyncFailed ? "USBWatcher - Sync failed" :
-                    "USBWatcher - Ready";
+                    !_deviceDetected ? "USB Watcher - Not detected" :
+                    !_deviceUnlocked ? "USB Watcher - Locked" :
+                    _syncRunning ? "USB Watcher - Syncing" :
+                    _lastSyncFailed ? "USB Watcher - Sync failed" :
+                    "USB Watcher - Ready";
             }
 
             private void RefreshMenuState()

@@ -75,19 +75,19 @@ namespace USBWatcherSync
                 var cfg = LoadConfigOrThrow(ConfigPath);
 
                 string? hintDrive = TryGetArg(args, "--hintDrive"); // "E:"
-                LogInfo($"Sync start. user={Environment.UserName} hintDrive={hintDrive ?? "<none>"} mode={cfg.Sync.Mode}");
+                LogInfo($"Sync start. user={Environment.UserName} hintDrive={hintDrive ?? "<none>"} mode={cfg.Sync.Mode}", EventIds.Sync.Started);
 
                 string? driveRoot = FindUSBDriveRoot(cfg.Device.PnpDeviceIdContainsAny, hintDrive);
                 if (driveRoot == null)
                 {
-                    ToastWarn("USBWatcher Sync", "Could not detect your unlocked USB drive. Please reconnect and unlock, then try again.");
+                    ToastWarn("USB Watcher Sync", "Could not detect your unlocked USB drive. Please reconnect and unlock, then try again.");
                     LogError("No unlocked USB drive found. Exiting.");
                     return EXIT_DRIVE_NOT_FOUND;
                 }
 
                 if (!CanAccessSyncSource(cfg.Sync, out var accessErr))
                 {
-                    ToastWarn("USBWatcher Sync", "Cannot access the USBWatcher sync source. Check VPN/connection or contact IT.");
+                    ToastWarn("USB Watcher Sync", "Cannot access the sync source. Check VPN/connection or contact IT.");
                     LogError($"Source access failed: {accessErr}");
                     return EXIT_SHARE_ACCESS_FAILED;
                 }
@@ -95,8 +95,8 @@ namespace USBWatcherSync
                 string targetFolder = Path.Combine(driveRoot, cfg.Sync.TargetFolder);
                 Directory.CreateDirectory(targetFolder);
 
-                ToastInfo("USBWatcher Sync", "File sync has started. Please do not remove your USB drive.");
-                LogInfo($"Resolved target folder: '{targetFolder}'");
+                ToastInfo("USB Watcher Sync", "File sync has started. Please do not remove your USB drive.");
+                LogInfo($"Resolved target folder: '{targetFolder}'", EventIds.Sync.Started);
 
                 int rc = cfg.Sync.Mode switch
                 {
@@ -107,17 +107,18 @@ namespace USBWatcherSync
 
                 if (rc >= 0 && rc <= 7)
                 {
-                    ToastInfo("USBWatcher Sync", "Sync completed successfully.");
-                    LogInfo("Sync completed successfully.");
+                    ToastInfo("USB Watcher Sync", "Sync completed successfully.");
+                    LogInfo("Sync completed successfully.", EventIds.Sync.Completed);
                     return EXIT_SUCCESS;
                 }
 
-                ToastError("USBWatcher Sync", $"Sync failed (robocopy={rc}). Please try again or contact IT.");
+                ToastError("USB Watcher Sync", $"Sync failed (robocopy={rc}). Please try again or contact IT.");
                 LogError($"Sync failed. Robocopy exit code={rc}.");
                 return EXIT_GENERAL_FAILURE;
             }
             catch (FileNotFoundException ex) when (string.Equals(Path.GetFileName(ex.FileName), "config.json", StringComparison.OrdinalIgnoreCase))
             {
+                ToastError("USB Watcher Sync", "Sync configuration file is missing. Please contact IT.");
                 LogError($"Config not found: {ex.FileName}");
                 return EXIT_CONFIG_ERROR;
             }
@@ -125,12 +126,13 @@ namespace USBWatcherSync
                 ex.Message.StartsWith("Invalid config.json", StringComparison.OrdinalIgnoreCase) ||
                 ex.Message.StartsWith("Unsupported Sync.Mode", StringComparison.OrdinalIgnoreCase))
             {
+                ToastError("USB Watcher Sync", "Sync configuration is invalid. Please contact IT.");
                 LogError(ex.Message);
                 return EXIT_CONFIG_ERROR;
             }
             catch (Exception ex)
             {
-                ToastError("USBWatcher Sync", "Sync failed due to an unexpected error. Please contact IT.");
+                ToastError("USB Watcher Sync", "Sync failed due to an unexpected error. Please contact IT.");
                 LogError($"Unhandled exception: {ex}");
                 return EXIT_GENERAL_FAILURE;
             }
@@ -140,10 +142,10 @@ namespace USBWatcherSync
         {
             string sourceFolder = cfg.Sync.Source;
 
-            LogInfo($"Mode 1 selected. Syncing folder '{sourceFolder}' -> '{targetFolder}'");
+            LogInfo($"Mode 1 selected. Syncing folder '{sourceFolder}' -> '{targetFolder}'", EventIds.Sync.Started);
 
             int rc = RunRobocopy(sourceFolder, targetFolder, null, out var rcLogPath);
-            LogInfo($"Mode 1 robocopy exit code={rc}. Log={rcLogPath}");
+            LogInfo($"Mode 1 robocopy exit code={rc}. Log={rcLogPath}", rc >= 0 && rc <= 7 ? EventIds.Sync.Completed : EventIds.Sync.Warning);
 
             return rc;
         }
@@ -153,7 +155,7 @@ namespace USBWatcherSync
             string zipPath = cfg.Sync.Source;
             string tempExtractFolder = Path.Combine(targetFolder, ".dlw-temp-extract");
 
-            LogInfo($"Mode 2 selected. ZIP source='{zipPath}' tempExtractFolder='{tempExtractFolder}' target='{targetFolder}'");
+            LogInfo($"Mode 2 selected. ZIP source='{zipPath}' tempExtractFolder='{tempExtractFolder}' target='{targetFolder}'", EventIds.Sync.Started);
 
             EnsureTempFolderIsSafe(targetFolder, tempExtractFolder);
 
@@ -161,13 +163,13 @@ namespace USBWatcherSync
             {
                 RecreateEmptyDirectory(tempExtractFolder);
 
-                ToastInfo("USBWatcher Sync", "Encrypted package detected. Extracting files before sync.");
-                LogInfo($"Extracting ZIP '{zipPath}' to '{tempExtractFolder}'");
+                LogInfo($"Extracting ZIP '{zipPath}' to '{tempExtractFolder}'", EventIds.Sync.ExtractStarted);
 
                 ExtractEncryptedZip(zipPath, cfg.Sync.Key, tempExtractFolder);
+                LogInfo($"ZIP extraction completed to '{tempExtractFolder}'", EventIds.Sync.ExtractCompleted);
 
                 int rc = RunRobocopy(tempExtractFolder, targetFolder, tempExtractFolder, out var rcLogPath);
-                LogInfo($"Mode 2 robocopy exit code={rc}. Log={rcLogPath}");
+                LogInfo($"Mode 2 robocopy exit code={rc}. Log={rcLogPath}", rc >= 0 && rc <= 7 ? EventIds.Sync.Completed : EventIds.Sync.Warning);
 
                 return rc;
             }
@@ -176,7 +178,7 @@ namespace USBWatcherSync
                 try
                 {
                     SafeDeleteDirectory(tempExtractFolder);
-                    LogInfo($"Removed temp extract folder '{tempExtractFolder}'");
+                    LogInfo($"Removed temp extract folder '{tempExtractFolder}'", EventIds.Sync.ExtractCompleted);
                 }
                 catch (Exception ex)
                 {
@@ -325,7 +327,7 @@ namespace USBWatcherSync
         {
             if (Directory.Exists(path))
             {
-                LogInfo($"Temp folder already exists. Removing stale folder '{path}'");
+                LogInfo($"Temp folder already exists. Removing stale folder '{path}'", EventIds.Sync.ExtractStarted);
                 SafeDeleteDirectory(path);
             }
 
@@ -334,7 +336,7 @@ namespace USBWatcherSync
             if (Directory.EnumerateFileSystemEntries(path).Any())
                 throw new IOException($"Temp folder is not empty after recreation: {path}");
 
-            LogInfo($"Created clean temp folder '{path}'");
+            LogInfo($"Created clean temp folder '{path}'", EventIds.Sync.ExtractStarted);
         }
 
         private static void EnsureTempFolderIsSafe(string targetFolder, string tempExtractFolder)
@@ -543,7 +545,10 @@ namespace USBWatcherSync
         }
 
         private static void LogInfo(string msg) => Logger.Info(msg, EventIds.Sync.Started);
+        private static void LogInfo(string msg, int eventId) => Logger.Info(msg, eventId);
         private static void LogWarn(string msg) => Logger.Warn(msg, EventIds.Sync.Warning);
+        private static void LogWarn(string msg, int eventId) => Logger.Warn(msg, eventId);
         private static void LogError(string msg) => Logger.Error(msg, EventIds.Sync.Error);
+        private static void LogError(string msg, int eventId) => Logger.Error(msg, eventId);
     }
 }
